@@ -46,6 +46,8 @@ internal sealed class MetricToggles
     public bool NetRecv { get; set; } = true;
     public bool DiskRead { get; set; } = true;
     public bool DiskWrite { get; set; } = true;
+    public bool Npu { get; set; } = true;
+    public bool NpuMemory { get; set; } = true;
 
     public MetricToggles Clone() => new()
     {
@@ -56,11 +58,71 @@ internal sealed class MetricToggles
         NetSend = NetSend,
         NetRecv = NetRecv,
         DiskRead = DiskRead,
-        DiskWrite = DiskWrite
+        DiskWrite = DiskWrite,
+        Npu = Npu,
+        NpuMemory = NpuMemory
     };
 
     public bool AnyEnabled() =>
-        Cpu || Memory || Gpu || Vram || NetSend || NetRecv || DiskRead || DiskWrite;
+        Cpu || Memory || Gpu || Vram || NetSend || NetRecv || DiskRead || DiskWrite || Npu || NpuMemory;
+}
+
+/// <summary>Per-metric "hide after it stays at zero".</summary>
+internal sealed class IdleHideToggles
+{
+    public bool Cpu { get; set; }
+    public bool Memory { get; set; }
+    public bool Gpu { get; set; }
+    public bool Vram { get; set; }
+    public bool NetSend { get; set; }
+    public bool NetRecv { get; set; }
+    public bool DiskRead { get; set; }
+    public bool DiskWrite { get; set; }
+    public bool Npu { get; set; }
+    public bool NpuMemory { get; set; }
+
+    public static IdleHideToggles AllOn() => new()
+    {
+        Cpu = true,
+        Memory = true,
+        Gpu = true,
+        Vram = true,
+        NetSend = true,
+        NetRecv = true,
+        DiskRead = true,
+        DiskWrite = true,
+        Npu = true,
+        NpuMemory = true
+    };
+
+    public IdleHideToggles Clone() => new()
+    {
+        Cpu = Cpu,
+        Memory = Memory,
+        Gpu = Gpu,
+        Vram = Vram,
+        NetSend = NetSend,
+        NetRecv = NetRecv,
+        DiskRead = DiskRead,
+        DiskWrite = DiskWrite,
+        Npu = Npu,
+        NpuMemory = NpuMemory
+    };
+
+    public bool SameAs(IdleHideToggles? other)
+    {
+        if (other is null) return false;
+        return Cpu == other.Cpu
+            && Memory == other.Memory
+            && Gpu == other.Gpu
+            && Vram == other.Vram
+            && NetSend == other.NetSend
+            && NetRecv == other.NetRecv
+            && DiskRead == other.DiskRead
+            && DiskWrite == other.DiskWrite
+            && Npu == other.Npu
+            && NpuMemory == other.NpuMemory;
+    }
 }
 
 /// <summary>Per-metric accent colors, stored as #RRGGBB.</summary>
@@ -74,6 +136,8 @@ internal sealed class MetricPalette
     public const string DefaultNetRecv = "#448AFF";
     public const string DefaultDiskRead = "#E040FB";
     public const string DefaultDiskWrite = "#EEFF41";
+    public const string DefaultNpu = "#FFD54F";
+    public const string DefaultNpuMemory = "#A5D6A7";
 
     public string Cpu { get; set; } = DefaultCpu;
     public string Memory { get; set; } = DefaultMemory;
@@ -83,6 +147,8 @@ internal sealed class MetricPalette
     public string NetRecv { get; set; } = DefaultNetRecv;
     public string DiskRead { get; set; } = DefaultDiskRead;
     public string DiskWrite { get; set; } = DefaultDiskWrite;
+    public string Npu { get; set; } = DefaultNpu;
+    public string NpuMemory { get; set; } = DefaultNpuMemory;
 
     public MetricPalette Clone() => new()
     {
@@ -93,7 +159,9 @@ internal sealed class MetricPalette
         NetSend = NetSend,
         NetRecv = NetRecv,
         DiskRead = DiskRead,
-        DiskWrite = DiskWrite
+        DiskWrite = DiskWrite,
+        Npu = Npu,
+        NpuMemory = NpuMemory
     };
 
     public void Normalize()
@@ -106,6 +174,8 @@ internal sealed class MetricPalette
         NetRecv = ToHex(Parse(NetRecv, DefaultNetRecv));
         DiskRead = ToHex(Parse(DiskRead, DefaultDiskRead));
         DiskWrite = ToHex(Parse(DiskWrite, DefaultDiskWrite));
+        Npu = ToHex(Parse(Npu, DefaultNpu));
+        NpuMemory = ToHex(Parse(NpuMemory, DefaultNpuMemory));
     }
 
     public static Color Parse(string? hex, string fallbackHex)
@@ -166,6 +236,17 @@ internal sealed class AppSettings
     /// <summary>Metrics sample interval in milliseconds (100–10000).</summary>
     public int UpdateIntervalMs { get; set; } = 1000;
 
+    /// <summary>How many busiest logical processors and GPU engines to list.</summary>
+    public int UsageDetailCount { get; set; } = 3;
+
+    /// <summary>Show the busiest-cores and busiest-engine panel. Left-click toggles it.</summary>
+    public bool ShowUsageDetails { get; set; } = true;
+
+    /// <summary>Legacy global switch. Migrated into <see cref="HideWhenIdle"/> on load.</summary>
+    public bool HideIdleMetrics { get; set; }
+
+    public IdleHideToggles HideWhenIdle { get; set; } = new();
+
     public bool HotkeyEnabled { get; set; } = true;
     /// <summary>Win32 MOD_* flags. Default Win+Ctrl.</summary>
     public int HotkeyModifiers { get; set; } = HotkeyDefaults.Modifiers;
@@ -202,6 +283,10 @@ internal sealed class AppSettings
         CompactValueFontPt = CompactValueFontPt,
         CompactLabelFontPt = CompactLabelFontPt,
         UpdateIntervalMs = Math.Clamp(UpdateIntervalMs, 100, 10_000),
+        UsageDetailCount = Math.Clamp(UsageDetailCount <= 0 ? 3 : UsageDetailCount, 1, 8),
+        ShowUsageDetails = ShowUsageDetails,
+        HideIdleMetrics = HideIdleMetrics,
+        HideWhenIdle = (HideWhenIdle ?? new IdleHideToggles()).Clone(),
         HotkeyEnabled = HotkeyEnabled,
         HotkeyModifiers = HotkeyModifiers,
         HotkeyVirtualKey = HotkeyVirtualKey,

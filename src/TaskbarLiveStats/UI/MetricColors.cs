@@ -13,7 +13,9 @@ internal static class MetricColors
         (MetricKind.NetSend, "Upload"),
         (MetricKind.NetRecv, "Download"),
         (MetricKind.DiskRead, "Disk read"),
-        (MetricKind.DiskWrite, "Disk write")
+        (MetricKind.DiskWrite, "Disk write"),
+        (MetricKind.Npu, "NPU"),
+        (MetricKind.NpuMemory, "NPU memory")
     ];
 
     public static Color Resolve(MetricPalette? palette, MetricKind kind)
@@ -29,6 +31,8 @@ internal static class MetricColors
             MetricKind.NetRecv => palette.NetRecv,
             MetricKind.DiskRead => palette.DiskRead,
             MetricKind.DiskWrite => palette.DiskWrite,
+            MetricKind.Npu => palette.Npu,
+            MetricKind.NpuMemory => palette.NpuMemory,
             _ => MetricPalette.DefaultCpu
         };
         string fallback = kind switch
@@ -41,6 +45,8 @@ internal static class MetricColors
             MetricKind.NetRecv => MetricPalette.DefaultNetRecv,
             MetricKind.DiskRead => MetricPalette.DefaultDiskRead,
             MetricKind.DiskWrite => MetricPalette.DefaultDiskWrite,
+            MetricKind.Npu => MetricPalette.DefaultNpu,
+            MetricKind.NpuMemory => MetricPalette.DefaultNpuMemory,
             _ => MetricPalette.DefaultCpu
         };
         return MetricPalette.Parse(hex, fallback);
@@ -59,6 +65,8 @@ internal static class MetricColors
             case MetricKind.NetRecv: palette.NetRecv = hex; break;
             case MetricKind.DiskRead: palette.DiskRead = hex; break;
             case MetricKind.DiskWrite: palette.DiskWrite = hex; break;
+            case MetricKind.Npu: palette.Npu = hex; break;
+            case MetricKind.NpuMemory: palette.NpuMemory = hex; break;
         }
     }
 

@@ -7,6 +7,7 @@ internal sealed class MetricsHub : IDisposable
     private readonly NetworkCollector _network = new();
     private readonly DiskCollector _disk = new();
     private readonly GpuCollector _gpu = new();
+    private readonly NpuCollector _npu = new();
     private readonly System.Threading.Timer _timer;
     private readonly SynchronizationContext? _ui;
     private readonly object _gate = new();
@@ -85,6 +86,7 @@ internal sealed class MetricsHub : IDisposable
                 _network.Reset();
                 _disk.Reset();
                 _gpu.Reset();
+                _npu.Reset();
                 // Arm rate counters. Don't publish this priming read — it is
                 // zeros and would blank numbers the UI is already showing.
                 _ = _cpu.Sample();
@@ -92,31 +94,39 @@ internal sealed class MetricsHub : IDisposable
                 _ = _network.Sample();
                 _ = _disk.Sample();
                 _ = _gpu.Sample();
+                _ = _npu.Sample();
                 if (!_paused)
                     _timer.Change(300, _intervalMs);
                 return;
             }
 
-            double cpu = _cpu.Sample();
+            var (cpu, cores) = _cpu.Sample();
             var (memUsed, memTotal, memPct) = _memory.Sample();
             var (send, recv) = _network.Sample();
             var (diskR, diskW) = _disk.Sample();
-            var (gpu, vramUsed, vramTotal, vramPct) = _gpu.Sample();
+            var (gpu, vramUsed, vramTotal, vramPct, engines) = _gpu.Sample();
+            NpuReading npu = _npu.Sample();
 
             if (_paused) return;
 
-            // Store ceiling percentages so every consumer sees the upper integer value
-            // (avoids rounding 0.4% down to a false "0%").
+            double npuMemPct = npu.TotalBytes == 0 ? 0 : 100.0 * npu.UsedBytes / npu.TotalBytes;
             var snap = new MetricsSnapshot
             {
-                CpuPercent = CeilPercent(cpu),
+                CpuPercent = RoundPercent(cpu),
+                BusiestCores = RankCores(cores),
                 MemoryUsedBytes = memUsed,
                 MemoryTotalBytes = memTotal,
                 MemoryPercent = CeilPercent(memPct),
-                GpuPercent = CeilPercent(gpu),
+                GpuPercent = RoundPercent(gpu),
+                BusiestEngines = RankEngines(engines),
                 VramUsedBytes = vramUsed,
                 VramTotalBytes = vramTotal,
                 VramPercent = CeilPercent(vramPct),
+                NpuPresent = npu.Present,
+                NpuPercent = RoundPercent(npu.Percent),
+                NpuMemoryUsedBytes = npu.UsedBytes,
+                NpuMemoryTotalBytes = npu.TotalBytes,
+                NpuMemoryPercent = CeilPercent(npuMemPct),
                 NetSendBytesPerSec = send,
                 NetRecvBytesPerSec = recv,
                 DiskReadBytesPerSec = diskR,
@@ -158,12 +168,50 @@ internal sealed class MetricsHub : IDisposable
         _timer.Dispose();
         _disk.Dispose();
         _gpu.Dispose();
+        _npu.Dispose();
+        _cpu.Dispose();
+    }
+
+    /// <summary>Whole percent, half away from zero, matching Task Manager.</summary>
+    private static double RoundPercent(double value)
+    {
+        if (double.IsNaN(value) || value <= 0) return 0;
+        if (value >= 100) return 100;
+        return Math.Round(value, 0, MidpointRounding.AwayFromZero);
     }
 
     private static double CeilPercent(double value)
     {
-        if (value <= 0) return 0;
+        if (double.IsNaN(value) || value <= 0) return 0;
         if (value >= 100) return 100;
         return Math.Ceiling(value);
+    }
+
+    private static CoreUsage[] RankCores(CoreUsage[] cores)
+    {
+        if (cores.Length == 0) return cores;
+        var copy = new CoreUsage[cores.Length];
+        for (int i = 0; i < cores.Length; i++)
+            copy[i] = new CoreUsage(cores[i].LogicalIndex, RoundPercent(cores[i].Percent));
+        Array.Sort(copy, static (a, b) =>
+        {
+            int cmp = b.Percent.CompareTo(a.Percent);
+            return cmp != 0 ? cmp : a.LogicalIndex.CompareTo(b.LogicalIndex);
+        });
+        return copy;
+    }
+
+    private static EngineUsage[] RankEngines(EngineUsage[] engines)
+    {
+        if (engines.Length == 0) return engines;
+        var copy = new EngineUsage[engines.Length];
+        for (int i = 0; i < engines.Length; i++)
+            copy[i] = new EngineUsage(engines[i].Name, RoundPercent(engines[i].Percent));
+        Array.Sort(copy, static (a, b) =>
+        {
+            int cmp = b.Percent.CompareTo(a.Percent);
+            return cmp != 0 ? cmp : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+        });
+        return copy;
     }
 }

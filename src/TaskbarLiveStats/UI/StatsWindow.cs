@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using TaskbarLiveStats.Metrics;
 using TaskbarLiveStats.Native;
 using TaskbarLiveStats.Settings;
@@ -14,7 +13,9 @@ internal sealed class StatsWindow : Form
     private readonly StatsRenderer _renderer = new();
     private readonly TaskbarEmbedder _embedder;
     private AppSettings _settings = AppSettings.CreateDefaults();
-    private MetricBlock[] _blocks = GroupLayout.FromSnapshot(MetricsSnapshot.Empty, AppSettings.CreateDefaults());
+    private OverlayFrame _frame = OverlayFrame.Empty;
+    private MetricsSnapshot _lastSnapshot = MetricsSnapshot.Empty;
+    private readonly Dictionary<MetricKind, IdleWatch> _idleWatches = new();
     private bool _barVisible = true;
     private bool _suppressed;
     private bool _gdiPaint;
@@ -109,7 +110,13 @@ internal sealed class StatsWindow : Form
             _settings.Metrics.NetSend != settings.Metrics.NetSend ||
             _settings.Metrics.NetRecv != settings.Metrics.NetRecv ||
             _settings.Metrics.DiskRead != settings.Metrics.DiskRead ||
-            _settings.Metrics.DiskWrite != settings.Metrics.DiskWrite;
+            _settings.Metrics.DiskWrite != settings.Metrics.DiskWrite ||
+            _settings.Metrics.Npu != settings.Metrics.Npu ||
+            _settings.Metrics.NpuMemory != settings.Metrics.NpuMemory ||
+            !_settings.HideWhenIdle.SameAs(settings.HideWhenIdle) ||
+            _settings.ShowUsageDetails != settings.ShowUsageDetails ||
+            _settings.UsageDetailCount != settings.UsageDetailCount;
+        bool hideIdleChanged = !_settings.HideWhenIdle.SameAs(settings.HideWhenIdle);
         bool rateUnitChanged = _settings.RateUnit != settings.RateUnit;
         bool densityChanged = _settings.Density != settings.Density;
         bool fontChanged =
@@ -118,6 +125,8 @@ internal sealed class StatsWindow : Form
             Math.Abs(_settings.CompactValueFontPt - settings.CompactValueFontPt) > 0.01f ||
             Math.Abs(_settings.CompactLabelFontPt - settings.CompactLabelFontPt) > 0.01f;
         _settings = settings.Clone();
+        if (hideIdleChanged)
+            _idleWatches.Clear();
         _renderer.ApplyTypography(_settings);
         if (orientationChanged || metricsChanged || rateUnitChanged || densityChanged || fontChanged)
             _renderer.ResetSizeLock();
@@ -147,7 +156,7 @@ internal sealed class StatsWindow : Form
             PaintFrame();
         }
 
-        RemeasureAndPaint();
+        RebuildBlocks(advanceIdleStreak: false);
     }
 
     public void EnsureHostAlive()
@@ -170,7 +179,13 @@ internal sealed class StatsWindow : Form
 
     public void UpdateMetrics(MetricsSnapshot snapshot)
     {
-        _blocks = GroupLayout.FromSnapshot(snapshot, _settings);
+        _lastSnapshot = snapshot;
+        RebuildBlocks(advanceIdleStreak: true);
+    }
+
+    private void RebuildBlocks(bool advanceIdleStreak)
+    {
+        _frame = GroupLayout.FromSnapshot(_lastSnapshot, _settings, _idleWatches, advanceIdleStreak);
         RemeasureAndPaint();
     }
 
@@ -180,7 +195,8 @@ internal sealed class StatsWindow : Form
             ? Math.Max(32, _lastInfo.TrayRect.Height)
             : 40;
 
-        var measured = _renderer.Measure(_blocks, thickness);
+        SyncDetailAnchor();
+        var measured = _renderer.Measure(_frame, thickness);
         if (measured.Width != _size.Width || measured.Height != _size.Height)
         {
             _size = measured;
@@ -250,7 +266,8 @@ internal sealed class StatsWindow : Form
         if (_settings.Orientation == OverlayOrientation.Vertical)
             barHeight = 40;
 
-        var measured = _renderer.Measure(_blocks, barHeight);
+        SyncDetailAnchor();
+        var measured = _renderer.Measure(_frame, barHeight);
         _size = measured;
         _embedder.DesiredWidth = measured.Width;
         _embedder.DesiredHeight = measured.Height;
@@ -311,7 +328,7 @@ internal sealed class StatsWindow : Form
         {
             _renderer.PaintLayered(
                 hwnd,
-                _blocks,
+                _frame,
                 Math.Max(1, _size.Width),
                 Math.Max(1, _size.Height),
                 Left,
@@ -380,6 +397,7 @@ internal sealed class StatsWindow : Form
         target.FloatingY = _settings.FloatingY;
         target.TaskbarOffsetX = _settings.TaskbarOffsetX;
         target.EdgePreset = _settings.EdgePreset;
+        target.ShowUsageDetails = _settings.ShowUsageDetails;
     }
 
     public void ResetFloatingPosition()
@@ -402,7 +420,8 @@ internal sealed class StatsWindow : Form
         if (HandlePublic == IntPtr.Zero) return;
 
         int thickness = 40;
-        var measured = _renderer.Measure(_blocks, thickness);
+        SyncDetailAnchor();
+        var measured = _renderer.Measure(_frame, thickness);
         _size = measured;
 
         Rectangle wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
@@ -563,7 +582,7 @@ internal sealed class StatsWindow : Form
         if (_settings.PlacementMode == PlacementMode.Taskbar)
             (x, y) = _embedder.GetLayeredDestPos();
 
-        bool ok = _renderer.PaintLayered(Handle, _blocks, _size.Width, _size.Height, x, y, asChild: false, FloatingAlpha);
+        bool ok = _renderer.PaintLayered(Handle, _frame, _size.Width, _size.Height, x, y, asChild: false, FloatingAlpha);
         if (ok)
         {
             if (_settings.PlacementMode == PlacementMode.Taskbar)
@@ -578,7 +597,7 @@ internal sealed class StatsWindow : Form
         if (!_gdiPaint && (_settings.PlacementMode == PlacementMode.Floating || _embedder.IsLayered))
             return;
         e.Graphics.Clear(ThemeHelper.TaskbarFillColor);
-        _renderer.PaintGdi(e.Graphics, _blocks, ClientSize.Width, ClientSize.Height);
+        _renderer.PaintGdi(e.Graphics, _frame, ClientSize.Width, ClientSize.Height);
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -659,22 +678,35 @@ internal sealed class StatsWindow : Form
 
     private void OnMouseClick(object? sender, MouseEventArgs e)
     {
-        // Right-click uses ContextMenuStrip (kept topmost via Opening handler).
+        // Right-click uses ContextMenuStrip, which already opens Task Manager.
         if (e.Button == MouseButtons.Left && !_suppressClick)
-            OpenTaskManager();
+            ToggleUsageDetails();
     }
 
-    private static void OpenTaskManager()
+    private void SyncDetailAnchor()
     {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "taskmgr.exe",
-                UseShellExecute = true
-            });
-        }
-        catch { /* ignore */ }
+        _renderer.DetailAnchor = DetailAnchor.Center;
+        if (_settings.PlacementMode != PlacementMode.Taskbar || _lastInfo.TrayHwnd == IntPtr.Zero)
+            return;
+
+        bool horizontal = _lastInfo.TrayRect.Width >= _lastInfo.TrayRect.Height;
+        if (!horizontal)
+            return;
+
+        var screen = SystemInformation.VirtualScreen;
+        if (_lastInfo.TrayRect.Bottom >= screen.Bottom - 16)
+            _renderer.DetailAnchor = DetailAnchor.Bottom;
+        else if (_lastInfo.TrayRect.Top <= screen.Top + 16)
+            _renderer.DetailAnchor = DetailAnchor.Top;
+    }
+
+    private void ToggleUsageDetails()
+    {
+        _settings.ShowUsageDetails = !_settings.ShowUsageDetails;
+        _renderer.ApplyTypography(_settings);
+        _layoutDirty = true;
+        RebuildBlocks(advanceIdleStreak: false);
+        SettingsChanged?.Invoke();
     }
 
     protected override void SetVisibleCore(bool value)

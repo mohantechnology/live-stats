@@ -45,10 +45,17 @@ internal sealed class SettingsStore
                 return AppSettings.CreateDefaults();
 
             loaded.Metrics ??= new MetricToggles();
+            loaded.HideWhenIdle ??= new IdleHideToggles();
+            if (loaded.HideIdleMetrics)
+            {
+                loaded.HideWhenIdle = IdleHideToggles.AllOn();
+                loaded.HideIdleMetrics = false;
+            }
             loaded.Colors ??= new MetricPalette();
             loaded.Colors.Normalize();
             loaded.Opacity = Math.Clamp(loaded.Opacity, 0.5, 1.0);
             loaded.UpdateIntervalMs = Math.Clamp(loaded.UpdateIntervalMs <= 0 ? 1000 : loaded.UpdateIntervalMs, 100, 10_000);
+            loaded.UsageDetailCount = Math.Clamp(loaded.UsageDetailCount <= 0 ? 3 : loaded.UsageDetailCount, 1, 8);
             loaded.DefaultValueFontPt = Math.Clamp(loaded.DefaultValueFontPt <= 0 ? 12f : loaded.DefaultValueFontPt, 7f, 28f);
             loaded.DefaultLabelFontPt = Math.Clamp(loaded.DefaultLabelFontPt <= 0 ? 8f : loaded.DefaultLabelFontPt, 6f, 18f);
             loaded.CompactValueFontPt = Math.Clamp(loaded.CompactValueFontPt <= 0 ? 10f : loaded.CompactValueFontPt, 7f, 28f);
@@ -69,6 +76,7 @@ internal sealed class SettingsStore
     {
         settings.Opacity = Math.Clamp(settings.Opacity, 0.5, 1.0);
         settings.UpdateIntervalMs = Math.Clamp(settings.UpdateIntervalMs, 100, 10_000);
+        settings.UsageDetailCount = Math.Clamp(settings.UsageDetailCount <= 0 ? 3 : settings.UsageDetailCount, 1, 8);
         settings.DefaultValueFontPt = Math.Clamp(settings.DefaultValueFontPt, 7f, 28f);
         settings.DefaultLabelFontPt = Math.Clamp(settings.DefaultLabelFontPt, 6f, 18f);
         settings.CompactValueFontPt = Math.Clamp(settings.CompactValueFontPt, 7f, 28f);

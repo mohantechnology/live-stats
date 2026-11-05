@@ -46,7 +46,10 @@ internal sealed class SettingsForm : AntdUI.Window
     private AntdUI.Switch? _startWithWindows;
     private AntdUI.Switch? _hotkeyEnabled;
     private AntdUI.InputNumber? _intervalMs;
-    private AntdUI.Switch? _cpu, _memory, _gpu, _vram, _netSend, _netRecv, _diskRead, _diskWrite;
+    private AntdUI.Switch? _cpu, _memory, _gpu, _vram, _netSend, _netRecv, _diskRead, _diskWrite, _npu, _npuMemory;
+    private AntdUI.Switch? _cpuHide, _memoryHide, _gpuHide, _vramHide, _netSendHide, _netRecvHide, _diskReadHide, _diskWriteHide, _npuHide, _npuMemoryHide;
+    private AntdUI.Switch? _showDetails;
+    private AntdUI.InputNumber? _detailCount;
     private AntdUI.Segmented? _orientSeg;
     private AntdUI.Segmented? _placeSeg;
     private AntdUI.Segmented? _rateUnitSeg;
@@ -313,20 +316,32 @@ internal sealed class SettingsForm : AntdUI.Window
         var page = NewPage();
         page.Add(PageTitle("Monitoring"));
 
+        var idle = _draft.HideWhenIdle ?? new IdleHideToggles();
         var metrics = NewCard();
         metrics.Add(Heading("Processor and memory"));
-        metrics.Add(SwitchRow("CPU usage", _draft.Metrics.Cpu, out _cpu));
-        metrics.Add(SwitchRow("RAM usage", _draft.Metrics.Memory, out _memory));
+        metrics.Add(Hint("Hide at 0 shows that metric only while it is in use. It returns as soon as the value is above zero, and leaves again after 10 seconds at zero.", 52));
+        metrics.Add(MetricRow("CPU usage", _draft.Metrics.Cpu, out _cpu, idle.Cpu, out _cpuHide));
+        metrics.Add(MetricRow("RAM usage", _draft.Metrics.Memory, out _memory, idle.Memory, out _memoryHide));
         metrics.Add(Heading("Graphics"));
-        metrics.Add(SwitchRow("GPU usage", _draft.Metrics.Gpu, out _gpu));
-        metrics.Add(SwitchRow("VRAM usage", _draft.Metrics.Vram, out _vram));
+        metrics.Add(MetricRow("GPU usage", _draft.Metrics.Gpu, out _gpu, idle.Gpu, out _gpuHide));
+        metrics.Add(MetricRow("VRAM usage", _draft.Metrics.Vram, out _vram, idle.Vram, out _vramHide));
+        metrics.Add(MetricRow("NPU usage", _draft.Metrics.Npu, out _npu, idle.Npu, out _npuHide));
+        metrics.Add(MetricRow("NPU memory", _draft.Metrics.NpuMemory, out _npuMemory, idle.NpuMemory, out _npuMemoryHide));
         metrics.Add(Heading("Network"));
-        metrics.Add(SwitchRow("Upload speed", _draft.Metrics.NetSend, out _netSend));
-        metrics.Add(SwitchRow("Download speed", _draft.Metrics.NetRecv, out _netRecv));
+        metrics.Add(MetricRow("Upload speed", _draft.Metrics.NetSend, out _netSend, idle.NetSend, out _netSendHide));
+        metrics.Add(MetricRow("Download speed", _draft.Metrics.NetRecv, out _netRecv, idle.NetRecv, out _netRecvHide));
         metrics.Add(Heading("Disk"));
-        metrics.Add(SwitchRow("Disk read", _draft.Metrics.DiskRead, out _diskRead));
-        metrics.Add(SwitchRow("Disk write", _draft.Metrics.DiskWrite, out _diskWrite));
+        metrics.Add(MetricRow("Disk read", _draft.Metrics.DiskRead, out _diskRead, idle.DiskRead, out _diskReadHide));
+        metrics.Add(MetricRow("Disk write", _draft.Metrics.DiskWrite, out _diskWrite, idle.DiskWrite, out _diskWriteHide));
         page.Add(metrics);
+
+        var details = NewCard();
+        details.Add(Heading("Busiest items"));
+        details.Add(SwitchRow("Show busiest items", _draft.ShowUsageDetails, out _showDetails));
+        details.Add(Hint("Sits beside the CPU and GPU labels, two per row. The name stays on the left and the percent on the right, so the bar does not shift. Performance cores are marked P and efficiency cores E when Windows reports them. Left-click the bar to show or hide them.", 84));
+        details.Add(Heading("How many"));
+        details.Add(NumberRow(MakeNumber(_draft.UsageDetailCount, 1, 8, 140), out _detailCount));
+        page.Add(details);
 
         var units = NewCard();
         units.Add(Heading("Transfer units"));
@@ -468,6 +483,24 @@ internal sealed class SettingsForm : AntdUI.Window
         if (_netRecv != null) _draft.Metrics.NetRecv = _netRecv.Checked;
         if (_diskRead != null) _draft.Metrics.DiskRead = _diskRead.Checked;
         if (_diskWrite != null) _draft.Metrics.DiskWrite = _diskWrite.Checked;
+        if (_npu != null) _draft.Metrics.Npu = _npu.Checked;
+        if (_npuMemory != null) _draft.Metrics.NpuMemory = _npuMemory.Checked;
+
+        _draft.HideWhenIdle ??= new IdleHideToggles();
+        if (_cpuHide != null) _draft.HideWhenIdle.Cpu = _cpuHide.Checked;
+        if (_memoryHide != null) _draft.HideWhenIdle.Memory = _memoryHide.Checked;
+        if (_gpuHide != null) _draft.HideWhenIdle.Gpu = _gpuHide.Checked;
+        if (_vramHide != null) _draft.HideWhenIdle.Vram = _vramHide.Checked;
+        if (_netSendHide != null) _draft.HideWhenIdle.NetSend = _netSendHide.Checked;
+        if (_netRecvHide != null) _draft.HideWhenIdle.NetRecv = _netRecvHide.Checked;
+        if (_diskReadHide != null) _draft.HideWhenIdle.DiskRead = _diskReadHide.Checked;
+        if (_diskWriteHide != null) _draft.HideWhenIdle.DiskWrite = _diskWriteHide.Checked;
+        if (_npuHide != null) _draft.HideWhenIdle.Npu = _npuHide.Checked;
+        if (_npuMemoryHide != null) _draft.HideWhenIdle.NpuMemory = _npuMemoryHide.Checked;
+
+        if (_showDetails != null) _draft.ShowUsageDetails = _showDetails.Checked;
+        if (_detailCount != null)
+            _draft.UsageDetailCount = (int)Math.Clamp(_detailCount.Value, 1, 8);
 
         _draft.Orientation = _orientSeg?.SelectIndex == 1
             ? OverlayOrientation.Vertical
@@ -540,6 +573,52 @@ internal sealed class SettingsForm : AntdUI.Window
         BackColor = BgCard,
         TextAlign = ContentAlignment.TopLeft
     };
+
+    private Panel MetricRow(string name, bool shown, out AntdUI.Switch showSwitch, bool hideIdle, out AntdUI.Switch hideSwitch)
+    {
+        var row = new Panel { Height = 44, BackColor = BgCard, Margin = Padding.Empty };
+        var label = new Label
+        {
+            Text = name,
+            AutoSize = false,
+            Font = _bodyFont,
+            ForeColor = TextPrimary,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var idleLabel = new Label
+        {
+            Text = "Hide at 0",
+            AutoSize = false,
+            Size = new Size(72, 28),
+            Font = _hintFont,
+            ForeColor = TextMuted,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleRight
+        };
+        hideSwitch = new AntdUI.Switch { Size = new Size(44, 24), Checked = hideIdle };
+        showSwitch = new AntdUI.Switch { Size = new Size(52, 28), Checked = shown };
+        var show = showSwitch;
+        var hide = hideSwitch;
+        var idleCaption = idleLabel;
+        row.Controls.Add(label);
+        row.Controls.Add(idleCaption);
+        row.Controls.Add(hide);
+        row.Controls.Add(show);
+        row.Resize += (_, _) =>
+        {
+            show.Left = Math.Max(0, row.Width - show.Width - 2);
+            show.Top = Math.Max(0, (row.Height - show.Height) / 2);
+            hide.Left = Math.Max(0, show.Left - hide.Width - 14);
+            hide.Top = Math.Max(0, (row.Height - hide.Height) / 2);
+            idleCaption.Left = Math.Max(0, hide.Left - idleCaption.Width - 6);
+            idleCaption.Top = Math.Max(0, (row.Height - idleCaption.Height) / 2);
+            label.SetBounds(0, 0, Math.Max(20, idleCaption.Left - 8), row.Height);
+            show.BringToFront();
+            hide.BringToFront();
+        };
+        return row;
+    }
 
     private Panel SwitchRow(string text, bool isChecked, out AntdUI.Switch toggle)
     {

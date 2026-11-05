@@ -78,6 +78,15 @@ internal sealed class TaskbarEmbedder : IDisposable
 
         screenX += OffsetX;
 
+        bool horizontalBar = info.TrayRect.Width >= info.TrayRect.Height;
+        if (horizontalBar && DesiredHeight > height)
+        {
+            var screen = SystemInformation.VirtualScreen;
+            if (info.TrayRect.Bottom >= screen.Bottom - 16)
+                screenY -= DesiredHeight - height;
+            height = DesiredHeight;
+        }
+
         if (_embedded)
             PositionChild(screenX, screenY, width, height);
         else

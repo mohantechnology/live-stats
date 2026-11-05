@@ -81,7 +81,7 @@ internal static class SettingsSelfTest
             VramTotalBytes = 8UL * 1024 * 1024 * 1024,
             VramPercent = 25
         };
-        var blocks = GroupLayout.FromSnapshot(snap, settings);
+        var blocks = GroupLayout.FromSnapshot(snap, settings).Main;
         var mem = blocks.FirstOrDefault(b => b.Kind == MetricKind.Memory);
         var vram = blocks.FirstOrDefault(b => b.Kind == MetricKind.Vram);
         if (!mem.Label.Contains("50%", StringComparison.Ordinal))
