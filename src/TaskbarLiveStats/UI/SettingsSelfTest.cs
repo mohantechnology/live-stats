@@ -89,6 +89,26 @@ internal static class SettingsSelfTest
         if (!vram.Label.Contains("25%", StringComparison.Ordinal))
             failures.Add($"VRAM label should include percent, got '{vram.Label}'.");
 
+        var palette = new MetricPalette();
+        palette.DiskWrite = "#112233";
+        var diskWrite = MetricColors.Resolve(palette, MetricKind.DiskWrite);
+        if (diskWrite.R != 0x11 || diskWrite.G != 0x22 || diskWrite.B != 0x33)
+            failures.Add($"Disk write color round-trip failed: {diskWrite}.");
+        var upload = MetricColors.Resolve(new MetricPalette(), MetricKind.NetSend);
+        if (upload.ToArgb() == diskWrite.ToArgb())
+            failures.Add("Upload and disk write colors must differ.");
+
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(60, 60);
+        form.Show();
+        Application.DoEvents();
+        AssertChrome(form, failures, "normal");
+        form.WindowState = FormWindowState.Maximized;
+        Application.DoEvents();
+        AssertChrome(form, failures, "maximized");
+        form.WindowState = FormWindowState.Normal;
+        form.Hide();
+
         string report = failures.Count == 0
             ? "SELF-TEST PASS\n- Settings chrome / TopMost OK\n- Orientation independent of Placement OK\n- Memory/VRAM percent labels OK\n"
             : "SELF-TEST FAIL\n" + string.Join("\n", failures.Select(f => "- " + f)) + "\n";
@@ -98,6 +118,42 @@ internal static class SettingsSelfTest
         Console.Write(report);
         Console.WriteLine("Wrote " + outPath);
         return failures.Count == 0 ? 0 : 1;
+    }
+
+    private static void AssertChrome(SettingsForm form, List<string> failures, string state)
+    {
+        Control? apply = null;
+        Control? title = null;
+        foreach (Control c in Enumerate(form))
+        {
+            if (apply == null && c is AntdUI.Button btn && string.Equals(btn.Text, "Apply", StringComparison.OrdinalIgnoreCase))
+                apply = btn;
+            if (title == null && c is Label label && string.Equals(label.Text, "General", StringComparison.Ordinal))
+                title = label;
+        }
+
+        if (apply?.Parent == null || title?.Parent?.Parent == null)
+        {
+            failures.Add($"Could not resolve settings chrome ({state}).");
+            return;
+        }
+
+        Control footer = apply.Parent;
+        Control host = title.Parent.Parent;
+        if (footer.Parent != form || host.Parent != form)
+        {
+            failures.Add($"Unexpected settings parent chain ({state}).");
+            return;
+        }
+
+        Rectangle overlap = Rectangle.Intersect(footer.Bounds, host.Bounds);
+        if (overlap.Width > 2 && overlap.Height > 2)
+            failures.Add($"Content overlaps footer ({state}). content={host.Bounds} footer={footer.Bounds}.");
+
+        Rectangle applyScreen = apply.RectangleToScreen(apply.ClientRectangle);
+        Rectangle clientScreen = form.RectangleToScreen(form.ClientRectangle);
+        if (!clientScreen.Contains(applyScreen))
+            failures.Add($"Apply is outside the window ({state}). apply={applyScreen} client={clientScreen}.");
     }
 
     private static AntdUI.Segmented? FindSegmented(Control root, string itemText)

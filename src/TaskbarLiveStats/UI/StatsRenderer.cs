@@ -14,6 +14,9 @@ internal sealed class StatsRenderer : IDisposable
     private const int BlockGapCompact = 10;
     private const int IconTextGap = 6;
     private const int IconBox = 18;
+    private const float AccentW = 5f;
+    private const float AccentGap = 6f;
+    private const float AccentGutter = AccentW + AccentGap;
 
     private Bitmap? _bitmap;
     private int _width;
@@ -22,6 +25,7 @@ internal sealed class StatsRenderer : IDisposable
     private OverlayDensity _density = OverlayDensity.Default;
     private float _valueFontPt = 12f;
     private float _labelFontPt = 8f;
+    private MetricPalette _colors = new();
 
     public OverlayOrientation Orientation
     {
@@ -58,6 +62,7 @@ internal sealed class StatsRenderer : IDisposable
         Density = settings.Density;
         ValueFontPt = settings.ActiveValueFontPt;
         LabelFontPt = settings.ActiveLabelFontPt;
+        _colors = (settings.Colors ?? new MetricPalette()).Clone();
     }
 
     public Size Measure(MetricBlock[] blocks, int preferredThickness)
@@ -118,10 +123,6 @@ internal sealed class StatsRenderer : IDisposable
         using var valueFont = CreateValueFont();
         using var labelFont = CreateLabelFont();
         using var iconFont = CreateIconFont();
-        using var valueBrush = new SolidBrush(ThemeHelper.TextColor);
-        using var labelBrush = new SolidBrush(ThemeHelper.DimColor);
-        using var iconBrush = new SolidBrush(ThemeHelper.DimColor);
-        using var iconBg = new SolidBrush(Color.FromArgb(28, ThemeHelper.TextColor));
 
         if (_orientation == OverlayOrientation.Horizontal)
         {
@@ -130,7 +131,7 @@ internal sealed class StatsRenderer : IDisposable
             {
                 var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
                 float y = (height - sz.Height) / 2f;
-                DrawBlock(g, block, x, y, sz, valueFont, labelFont, iconFont, valueBrush, labelBrush, iconBrush, iconBg, compact);
+                DrawBlock(g, block, x, y, sz, valueFont, labelFont, iconFont, compact);
                 x += sz.Width + gap;
             }
         }
@@ -142,7 +143,7 @@ internal sealed class StatsRenderer : IDisposable
             {
                 var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
                 var drawSize = new SizeF(Math.Max(sz.Width, colW), sz.Height);
-                DrawBlock(g, block, PadX, y, drawSize, valueFont, labelFont, iconFont, valueBrush, labelBrush, iconBrush, iconBg, compact);
+                DrawBlock(g, block, PadX, y, drawSize, valueFont, labelFont, iconFont, compact);
                 y += sz.Height + gap;
             }
         }
@@ -191,15 +192,15 @@ internal sealed class StatsRenderer : IDisposable
         float textH = valueH + labelH - 2;
 
         if (compact)
-            return new SizeF(textW, textH);
+            return new SizeF(textW + AccentGutter, textH);
 
         float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
         float h = Math.Max(iconSide, textH);
-        float w = iconSide + IconTextGap + textW;
+        float w = AccentGutter + iconSide + IconTextGap + textW;
         return new SizeF(w, h);
     }
 
-    private static void DrawBlock(
+    private void DrawBlock(
         Graphics g,
         MetricBlock block,
         float x,
@@ -208,20 +209,27 @@ internal sealed class StatsRenderer : IDisposable
         Font valueFont,
         Font labelFont,
         Font iconFont,
-        Brush valueBrush,
-        Brush labelBrush,
-        Brush iconBrush,
-        Brush iconBg,
         bool compact)
     {
-        float textX = x;
-        float textW = size.Width;
+        Color accent = Accent(block.Kind);
+        Color labelColor = Blend(accent, ThemeHelper.DimColor, 0.22f);
+        using var accentBrush = new SolidBrush(accent);
+        using var labelBrush = new SolidBrush(labelColor);
+        using var iconBg = new SolidBrush(Color.FromArgb(48, accent));
+
+        var barRect = new RectangleF(x, y + 1.5f, AccentW, Math.Max(8f, size.Height - 3f));
+        float barRadius = Math.Min(AccentW / 2f, Math.Max(1f, barRect.Height / 2f - 0.25f));
+        using (var barPath = RoundedRect(barRect, barRadius))
+            g.FillPath(accentBrush, barPath);
+
+        float textX = x + AccentGutter;
+        float textW = Math.Max(8f, size.Width - AccentGutter);
 
         if (!compact)
         {
             float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
             float iconY = y + (size.Height - iconSide) / 2f;
-            var iconRect = new RectangleF(x, iconY, iconSide, iconSide);
+            var iconRect = new RectangleF(textX, iconY, iconSide, iconSide);
             using (var path = RoundedRect(iconRect, 3))
                 g.FillPath(iconBg, path);
 
@@ -231,10 +239,10 @@ internal sealed class StatsRenderer : IDisposable
                 LineAlignment = StringAlignment.Center,
                 FormatFlags = StringFormatFlags.NoWrap
             };
-            g.DrawString(block.IconGlyph, iconFont, iconBrush, iconRect, center);
+            g.DrawString(block.IconGlyph, iconFont, accentBrush, iconRect, center);
 
-            textX = x + iconSide + IconTextGap;
-            textW = Math.Max(8, size.Width - iconSide - IconTextGap);
+            textX += iconSide + IconTextGap;
+            textW = Math.Max(8f, size.Width - AccentGutter - iconSide - IconTextGap);
         }
 
         float valueH = valueFont.GetHeight(g);
@@ -250,8 +258,30 @@ internal sealed class StatsRenderer : IDisposable
             Trimming = StringTrimming.EllipsisCharacter
         };
 
-        g.DrawString(block.Value, valueFont, valueBrush, new RectangleF(textX, textY, textW, valueH + 2), near);
+        g.DrawString(block.Value, valueFont, accentBrush, new RectangleF(textX, textY, textW, valueH + 2), near);
         g.DrawString(block.Label, labelFont, labelBrush, new RectangleF(textX, textY + valueH - 2, textW, labelH + 2), near);
+    }
+
+    private Color Accent(MetricKind kind)
+    {
+        Color color = MetricColors.Resolve(_colors, kind);
+        if (ThemeHelper.IsDarkTaskbar())
+            return color;
+
+        return Color.FromArgb(
+            color.A,
+            Math.Clamp((int)(color.R * 0.62), 0, 255),
+            Math.Clamp((int)(color.G * 0.62), 0, 255),
+            Math.Clamp((int)(color.B * 0.62), 0, 255));
+    }
+
+    private static Color Blend(Color from, Color to, float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        return Color.FromArgb(
+            (int)(from.R + (to.R - from.R) * t),
+            (int)(from.G + (to.G - from.G) * t),
+            (int)(from.B + (to.B - from.B) * t));
     }
 
     private static GraphicsPath RoundedRect(RectangleF rect, float radius)

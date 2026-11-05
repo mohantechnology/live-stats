@@ -16,6 +16,7 @@ internal sealed class StatsWindow : Form
     private AppSettings _settings = AppSettings.CreateDefaults();
     private MetricBlock[] _blocks = GroupLayout.FromSnapshot(MetricsSnapshot.Empty, AppSettings.CreateDefaults());
     private bool _barVisible = true;
+    private bool _suppressed;
     private bool _gdiPaint;
     private TaskbarInfo _lastInfo;
     private Size _size = new(420, 40);
@@ -32,8 +33,9 @@ internal sealed class StatsWindow : Form
 
     public bool IsEmbedded => _embedder.IsEmbedded;
 
+    public bool IsOverlayShown => _barVisible && !_suppressed;
+
     public event Action? SettingsChanged;
-    public event Action? HotkeyToggleRequested;
 
     public IntPtr HandlePublic => IsHandleCreated && NativeMethods.IsWindow(Handle) ? Handle : IntPtr.Zero;
 
@@ -135,7 +137,7 @@ internal sealed class StatsWindow : Form
             else
             {
                 _layoutDirty = true;
-                if (_lastInfo.TrayHwnd != IntPtr.Zero && _barVisible)
+                if (_lastInfo.TrayHwnd != IntPtr.Zero && _barVisible && !_suppressed)
                     ApplyTaskbar(_lastInfo, force: true);
             }
         }
@@ -189,11 +191,14 @@ internal sealed class StatsWindow : Form
                 _embedder.InvalidateLayoutCache();
                 _layoutDirty = true;
             }
-            else
+            else if (_barVisible && !_suppressed)
             {
                 SetBounds(Left, Top, measured.Width, measured.Height);
             }
         }
+
+        if (_suppressed || !_barVisible)
+            return;
 
         if (_settings.PlacementMode == PlacementMode.Taskbar)
         {
@@ -212,6 +217,9 @@ internal sealed class StatsWindow : Form
 
     private void ApplyTaskbar(TaskbarInfo info, bool force)
     {
+        if (_suppressed || !_barVisible)
+            return;
+
         if (_settings.PlacementMode != PlacementMode.Taskbar)
             return;
 
@@ -261,39 +269,90 @@ internal sealed class StatsWindow : Form
         PaintFrame();
     }
 
+    /// <summary>
+    /// User show/hide. While suppressed, taskbar auto-hide and layout cannot bring the overlay back.
+    /// </summary>
+    public void SetUserSuppressed(bool suppressed)
+    {
+        _suppressed = suppressed;
+        if (!suppressed)
+            return;
+
+        _embedder.ReleaseSlot();
+        SetVisible(false);
+    }
+
     public void SetVisible(bool visible)
     {
-        // Floating mode ignores taskbar auto-hide.
-        if (_settings.PlacementMode == PlacementMode.Floating)
-        {
-            _barVisible = true;
-            EnsureHostAlive();
-            if (HandlePublic != IntPtr.Zero)
-            {
-                NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
-                PaintFrame();
-            }
-            return;
-        }
-
-        if (!visible && _embedder.IsEmbedded)
-            return;
+        if (_suppressed)
+            visible = false;
 
         _barVisible = visible;
+        _embedder.SetVisible(visible);
 
         if (!visible)
         {
-            var hwnd = HandlePublic;
-            if (hwnd != IntPtr.Zero)
-                NativeMethods.ShowWindow(hwnd, NativeMethods.SW_HIDE);
-            _embedder.SetVisible(false);
+            HideNative();
             return;
         }
 
-        EnsureHostAlive();
-        if (HandlePublic == IntPtr.Zero) return;
+        ShowNative();
+    }
 
-        _embedder.SetVisible(true);
+    private void HideNative()
+    {
+        IntPtr hwnd = HandlePublic;
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        // Layered sprites can survive SW_HIDE. Clear the pixels first so a failed
+        // hide still leaves nothing on screen, then hide the window.
+        try
+        {
+            _renderer.PaintLayered(
+                hwnd,
+                _blocks,
+                Math.Max(1, _size.Width),
+                Math.Max(1, _size.Height),
+                Left,
+                Top,
+                asChild: false,
+                alpha: 0);
+        }
+        catch
+        {
+            // Still hide below.
+        }
+
+        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_HIDE);
+        NativeMethods.SetWindowPos(
+            hwnd,
+            IntPtr.Zero,
+            0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_HIDEWINDOW);
+
+        if (Visible)
+            Visible = false;
+    }
+
+    private void ShowNative()
+    {
+        EnsureHostAlive();
+        if (HandlePublic == IntPtr.Zero)
+            return;
+
+        if (!Visible)
+            Visible = true;
+
+        NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
+
+        if (_settings.PlacementMode == PlacementMode.Floating)
+        {
+            ApplyFloatingPosition(applyEdge: false);
+            return;
+        }
+
         _layoutDirty = true;
         if (_lastInfo.TrayHwnd != IntPtr.Zero)
             ApplyTaskbar(_lastInfo, force: true);
@@ -303,7 +362,7 @@ internal sealed class StatsWindow : Form
 
     public void Reembed(TaskbarInfo info)
     {
-        if (_settings.PlacementMode != PlacementMode.Taskbar)
+        if (_suppressed || _settings.PlacementMode != PlacementMode.Taskbar)
             return;
 
         _lastInfo = info;
@@ -376,8 +435,16 @@ internal sealed class StatsWindow : Form
         }
 
         SetBounds(x, y, measured.Width, measured.Height);
+        if (_suppressed || !_barVisible)
+        {
+            HideNative();
+            return;
+        }
+
         // Stay topmost so the overlay remains above the settings window.
         TopMost = true;
+        if (!Visible)
+            Visible = true;
         NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
         RaiseFloatingZOrder();
         ApplyFloatingOpacity();
@@ -469,7 +536,7 @@ internal sealed class StatsWindow : Form
 
     private void PaintFrame()
     {
-        if (!_barVisible || HandlePublic == IntPtr.Zero) return;
+        if (_suppressed || !_barVisible || HandlePublic == IntPtr.Zero) return;
 
         if (_settings.PlacementMode == PlacementMode.Taskbar && !_embedder.HasValidLayout)
             return;
@@ -610,15 +677,11 @@ internal sealed class StatsWindow : Form
         catch { /* ignore */ }
     }
 
-    protected override void WndProc(ref Message m)
+    protected override void SetVisibleCore(bool value)
     {
-        if (HotkeyHook.IsHotkeyMessage(m))
-        {
-            HotkeyToggleRequested?.Invoke();
-            return;
-        }
-
-        base.WndProc(ref m);
+        if ((_suppressed || !_barVisible) && value)
+            value = false;
+        base.SetVisibleCore(value);
     }
 
     protected override void Dispose(bool disposing)

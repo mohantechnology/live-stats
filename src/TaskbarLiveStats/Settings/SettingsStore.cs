@@ -45,6 +45,8 @@ internal sealed class SettingsStore
                 return AppSettings.CreateDefaults();
 
             loaded.Metrics ??= new MetricToggles();
+            loaded.Colors ??= new MetricPalette();
+            loaded.Colors.Normalize();
             loaded.Opacity = Math.Clamp(loaded.Opacity, 0.5, 1.0);
             loaded.UpdateIntervalMs = Math.Clamp(loaded.UpdateIntervalMs <= 0 ? 1000 : loaded.UpdateIntervalMs, 100, 10_000);
             loaded.DefaultValueFontPt = Math.Clamp(loaded.DefaultValueFontPt <= 0 ? 12f : loaded.DefaultValueFontPt, 7f, 28f);
@@ -71,6 +73,8 @@ internal sealed class SettingsStore
         settings.DefaultLabelFontPt = Math.Clamp(settings.DefaultLabelFontPt, 6f, 18f);
         settings.CompactValueFontPt = Math.Clamp(settings.CompactValueFontPt, 7f, 28f);
         settings.CompactLabelFontPt = Math.Clamp(settings.CompactLabelFontPt, 6f, 18f);
+        settings.Colors ??= new MetricPalette();
+        settings.Colors.Normalize();
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         string? dir = System.IO.Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))

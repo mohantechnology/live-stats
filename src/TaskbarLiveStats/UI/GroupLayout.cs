@@ -66,25 +66,25 @@ internal static class GroupLayout
         if (m.NetSend)
         {
             var (val, unit) = FormatRateParts(s.NetSendBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.NetSend, IconNetwork, $"{val} {unit}", "Send"));
+            list.Add(new MetricBlock(MetricKind.NetSend, IconNetwork, $"{val} {unit}", "Upload"));
         }
 
         if (m.NetRecv)
         {
             var (val, unit) = FormatRateParts(s.NetRecvBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.NetRecv, IconNetwork, $"{val} {unit}", "Receive"));
+            list.Add(new MetricBlock(MetricKind.NetRecv, IconNetwork, $"{val} {unit}", "Download"));
         }
 
         if (m.DiskRead)
         {
             var (val, unit) = FormatRateParts(s.DiskReadBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.DiskRead, IconDisk, $"{val} {unit}", "Disk R"));
+            list.Add(new MetricBlock(MetricKind.DiskRead, IconDisk, $"{val} {unit}", "Disk read"));
         }
 
         if (m.DiskWrite)
         {
             var (val, unit) = FormatRateParts(s.DiskWriteBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.DiskWrite, IconDisk, $"{val} {unit}", "Disk W"));
+            list.Add(new MetricBlock(MetricKind.DiskWrite, IconDisk, $"{val} {unit}", "Disk write"));
         }
 
         if (list.Count == 0)
@@ -101,8 +101,8 @@ internal static class GroupLayout
             $"Memory {FormatGiB(s.MemoryUsedBytes)} / {FormatGiB(s.MemoryTotalBytes)} ({UpperPercent(s.MemoryPercent)}%)\n" +
             $"GPU {UpperPercent(s.GpuPercent)}%\n" +
             $"GPU memory {FormatGiB(s.VramUsedBytes)} / {FormatGiB(s.VramTotalBytes)}\n" +
-            $"Send {FormatRate(s.NetSendBytesPerSec, useBits)}  Recv {FormatRate(s.NetRecvBytesPerSec, useBits)}\n" +
-            $"Disk R {FormatRate(s.DiskReadBytesPerSec, useBits)}  W {FormatRate(s.DiskWriteBytesPerSec, useBits)}");
+            $"Upload {FormatRate(s.NetSendBytesPerSec, useBits)}  Download {FormatRate(s.NetRecvBytesPerSec, useBits)}\n" +
+            $"Disk read {FormatRate(s.DiskReadBytesPerSec, useBits)}  Disk write {FormatRate(s.DiskWriteBytesPerSec, useBits)}");
     }
 
     /// <summary>Stable placeholder used to size blocks so the overlay does not jitter.</summary>
@@ -117,9 +117,10 @@ internal static class GroupLayout
     {
         MetricKind.Memory => "Memory (100%)",
         MetricKind.Vram => "VRAM (100%)",
-        MetricKind.NetRecv => "Receive",
-        MetricKind.DiskRead => "Disk R",
-        MetricKind.DiskWrite => "Disk W",
+        MetricKind.NetSend => "Upload",
+        MetricKind.NetRecv => "Download",
+        MetricKind.DiskRead => "Disk read",
+        MetricKind.DiskWrite => "Disk write",
         _ => "CPU"
     };
 

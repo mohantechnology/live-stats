@@ -60,6 +60,8 @@ internal sealed class TrayAppContext : ApplicationContext
             ShortcutKeyDisplayString = HotkeyHook.Format(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey)
         };
         _showHideItem.Click += (_, _) => ToggleOverlayVisibility();
+        _hotkey.Pressed += ToggleOverlayVisibility;
+        _hotkey.Apply(_settings);
 
         _menu = new ContextMenuStrip();
         _menu.Items.Add("Settings…", null, (_, _) => OpenSettings());
@@ -102,25 +104,14 @@ internal sealed class TrayAppContext : ApplicationContext
             Persist();
         };
 
-        _window.HotkeyToggleRequested += ToggleOverlayVisibility;
-        _window.HandleCreated += (_, _) =>
-        {
-            _hotkey.Bind(_window.Handle);
-            _hotkey.Apply(_settings);
-        };
-        if (_window.IsHandleCreated)
-        {
-            _hotkey.Bind(_window.Handle);
-            _hotkey.Apply(_settings);
-        }
-
         _metrics.Updated += snap =>
         {
             if (_window.HandlePublic == IntPtr.Zero) return;
             try
             {
                 _tray.Text = TruncateTip(GroupLayout.Tooltip(snap, _settings));
-                _window.UpdateMetrics(snap);
+                if (_window.IsOverlayShown)
+                    _window.UpdateMetrics(snap);
             }
             catch { /* ignore */ }
         };
@@ -147,8 +138,12 @@ internal sealed class TrayAppContext : ApplicationContext
             if (_settings.PlacementMode != PlacementMode.Taskbar)
                 return;
             _window.EnsureHostAlive();
-            _hotkey.Bind(_window.HandlePublic);
             _hotkey.Apply(_settings);
+            if (_userHidden)
+            {
+                _window.SetVisible(false);
+                return;
+            }
             _window.Reembed(_watcher.Current);
         };
 
@@ -197,18 +192,18 @@ internal sealed class TrayAppContext : ApplicationContext
         _userHidden = !_userHidden;
         if (_userHidden)
         {
-            _window.SetVisible(false);
+            _window.SetUserSuppressed(true);
             _metrics.Pause();
+            return;
         }
-        else
+
+        _window.SetUserSuppressed(false);
+        if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
         {
-            if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
-            {
-                _window.SetVisible(true);
-                if (_settings.PlacementMode == PlacementMode.Taskbar)
-                    _window.ApplyTaskbar(_watcher.Current);
-                _metrics.Resume();
-            }
+            _window.SetVisible(true);
+            if (_settings.PlacementMode == PlacementMode.Taskbar)
+                _window.ApplyTaskbar(_watcher.Current);
+            _metrics.Resume();
         }
     }
 
@@ -237,7 +232,6 @@ internal sealed class TrayAppContext : ApplicationContext
             _startupItem.Checked = _settings.StartWithWindows;
 
         _metrics.IntervalMs = _settings.UpdateIntervalMs;
-        _hotkey.Bind(_window.HandlePublic);
         _hotkey.Apply(_settings);
 
         _window.ApplySettings(_settings, forceLayout: true);

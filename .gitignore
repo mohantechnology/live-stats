@@ -5,3 +5,4 @@ publish-fd/
 *.user
 *.suo
 .vs/
+tasks.txt

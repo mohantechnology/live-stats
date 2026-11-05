@@ -1,10 +1,12 @@
+using System.Drawing.Drawing2D;
 using System.Reflection;
 using TaskbarLiveStats.Settings;
 
 namespace TaskbarLiveStats.UI;
 
 /// <summary>
-/// Professional settings UI built with AntdUI (Ant Design for WinForms).
+/// Settings window. Sections are stacked and scrolled so controls stay readable
+/// at the default size and when the window is maximized.
 /// </summary>
 internal sealed class SettingsForm : AntdUI.Window
 {
@@ -15,15 +17,31 @@ internal sealed class SettingsForm : AntdUI.Window
     private static readonly Color TextPrimary = Color.FromArgb(245, 245, 245);
     private static readonly Color TextMuted = Color.FromArgb(170, 170, 175);
 
+    private const int HeaderH = 48;
+    private const int FooterH = 68;
+    private const int SideW = 208;
+
     private readonly AppSettings _draft;
     private readonly Action<AppSettings> _apply;
+    private readonly Font _titleFont = new("Segoe UI Semibold", 20f, FontStyle.Bold, GraphicsUnit.Point);
+    private readonly Font _headingFont = new("Segoe UI Semibold", 11f, FontStyle.Bold, GraphicsUnit.Point);
+    private readonly Font _bodyFont = new("Segoe UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
+    private readonly Font _hintFont = new("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
 
+    private readonly AntdUI.PageHeader _header;
+    private readonly Panel _side;
     private readonly AntdUI.Menu _nav;
-    private readonly Panel _contentHost;
-    private readonly Panel _generalPanel;
-    private readonly Panel _monitoringPanel;
-    private readonly Panel _appearancePanel;
-    private readonly Panel _aboutPanel;
+    private readonly Panel _content;
+    private readonly Panel _footer;
+    private readonly AntdUI.Button _btnApply;
+    private readonly AntdUI.Button _btnOk;
+    private readonly AntdUI.Button _btnCancel;
+
+    private readonly StackPanel _generalPage;
+    private readonly StackPanel _monitoringPage;
+    private readonly StackPanel _appearancePage;
+    private readonly StackPanel _aboutPage;
+    private readonly Dictionary<MetricKind, ColorSwatch> _swatches = new();
 
     private AntdUI.Switch? _startWithWindows;
     private AntdUI.Switch? _hotkeyEnabled;
@@ -35,9 +53,13 @@ internal sealed class SettingsForm : AntdUI.Window
     private AntdUI.Segmented? _densitySeg;
     private AntdUI.Select? _edgePreset;
     private AntdUI.Slider? _opacity;
-    private AntdUI.Label? _opacityValue;
+    private Label? _opacityValue;
     private AntdUI.Switch? _alwaysOnTop;
     private AntdUI.InputNumber? _defaultValuePt, _defaultLabelPt, _compactValuePt, _compactLabelPt;
+
+    private bool _chromeReady;
+    private bool _inChrome;
+    private string _section = "general";
 
     public SettingsForm(AppSettings current, Action<AppSettings> apply)
     {
@@ -50,20 +72,18 @@ internal sealed class SettingsForm : AntdUI.Window
         Resizable = true;
         MinimizeBox = true;
         MaximizeBox = true;
-        // Not TopMost — live stats overlay stays above this window.
         TopMost = false;
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(920, 640);
-        MinimumSize = new Size(780, 540);
+        MinimumSize = new Size(880, 580);
         BackColor = BgApp;
         ForeColor = TextPrimary;
-        Font = new Font("Segoe UI", 9.75f);
+        Font = _bodyFont;
+        Padding = Padding.Empty;
 
-        var header = new AntdUI.PageHeader
+        _header = new AntdUI.PageHeader
         {
-            Dock = DockStyle.Top,
-            Height = 48,
+            Dock = DockStyle.None,
             Text = "Taskbar Live Stats",
             SubText = "Settings",
             ShowIcon = false,
@@ -77,22 +97,9 @@ internal sealed class SettingsForm : AntdUI.Window
             ForeColor = TextPrimary
         };
 
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 2,
-            Padding = new Padding(0),
-            BackColor = BgApp
-        };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-
         _nav = new AntdUI.Menu
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.None,
             BackColor = BgSide,
             ForeColor = TextPrimary,
             Radius = 8,
@@ -102,302 +109,276 @@ internal sealed class SettingsForm : AntdUI.Window
         _nav.Items.Add(new AntdUI.MenuItem { Text = "Monitoring", ID = "monitoring" });
         _nav.Items.Add(new AntdUI.MenuItem { Text = "Appearance", ID = "appearance" });
         _nav.Items.Add(new AntdUI.MenuItem { Text = "About", ID = "about" });
-        _nav.SelectIndex(0);
         _nav.SelectChanged += (_, e) => ShowSection(e.Value?.ID ?? "general");
 
-        _contentHost = new Panel
+        _side = new Panel { BackColor = BgSide, Margin = Padding.Empty };
+        _side.Controls.Add(_nav);
+
+        _content = new Panel
         {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(0),
             BackColor = BgApp,
-            AutoScroll = true
+            AutoScroll = true,
+            Margin = Padding.Empty
         };
 
-        _generalPanel = BuildGeneral();
-        _monitoringPanel = BuildMonitoring();
-        _appearancePanel = BuildAppearance();
-        _aboutPanel = BuildAbout();
+        _generalPage = BuildGeneral();
+        _monitoringPage = BuildMonitoring();
+        _appearancePage = BuildAppearance();
+        _aboutPage = BuildAbout();
+        foreach (var page in Pages())
+            _content.Controls.Add(page);
 
-        foreach (var p in new[] { _generalPanel, _monitoringPanel, _appearancePanel, _aboutPanel })
-        {
-            p.Visible = false;
-            p.BackColor = BgApp;
-            _contentHost.Controls.Add(p);
-        }
+        _btnCancel = MakeButton("Cancel", AntdUI.TTypeMini.Default);
+        _btnCancel.Click += (_, _) => Close();
 
-        _contentHost.Resize += (_, _) => LayoutActiveSection();
-
-        var buttons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(16, 14, 20, 14),
-            BackColor = BgFooter
-        };
-
-        var btnCancel = MakeButton("Cancel", AntdUI.TTypeMini.Default);
-        btnCancel.Click += (_, _) => Close();
-
-        var btnOk = MakeButton("OK", AntdUI.TTypeMini.Primary);
-        btnOk.Click += (_, _) =>
+        _btnOk = MakeButton("OK", AntdUI.TTypeMini.Primary);
+        _btnOk.Click += (_, _) =>
         {
             PullFromUi();
             _apply(_draft.Clone());
             Close();
         };
 
-        var btnApply = MakeButton("Apply", AntdUI.TTypeMini.Primary);
-        btnApply.Ghost = true;
-        btnApply.Click += (_, _) =>
+        _btnApply = MakeButton("Apply", AntdUI.TTypeMini.Primary);
+        _btnApply.Ghost = true;
+        _btnApply.Click += (_, _) =>
         {
             PullFromUi();
             _apply(_draft.Clone());
         };
 
-        buttons.Controls.Add(btnCancel);
-        buttons.Controls.Add(btnOk);
-        buttons.Controls.Add(btnApply);
-
-        var side = new Panel
+        _footer = new Panel { BackColor = BgFooter, Margin = Padding.Empty };
+        _footer.Controls.Add(_btnApply);
+        _footer.Controls.Add(_btnOk);
+        _footer.Controls.Add(_btnCancel);
+        _footer.Paint += (_, e) =>
         {
-            Dock = DockStyle.Fill,
-            BackColor = BgSide,
-            Padding = new Padding(12, 16, 12, 16)
+            using var pen = new Pen(Color.FromArgb(58, 58, 64));
+            e.Graphics.DrawLine(pen, 0, 0, _footer.Width, 0);
         };
-        side.Controls.Add(_nav);
 
-        root.Controls.Add(side, 0, 0);
-        root.SetRowSpan(side, 2);
-        root.Controls.Add(_contentHost, 1, 0);
-        root.Controls.Add(buttons, 1, 1);
+        Controls.Add(_content);
+        Controls.Add(_side);
+        Controls.Add(_footer);
+        Controls.Add(_header);
 
-        Controls.Add(root);
-        Controls.Add(header);
-
+        _nav.SelectIndex(0);
         ShowSection("general");
         SyncFloatingControls();
-        SyncFontEditors();
 
-        Shown += (_, _) =>
+        ClientSize = new Size(1000, 720);
+        _chromeReady = true;
+        LayoutChrome();
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        LayoutChrome();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        Activate();
+        BringToFront();
+        LayoutChrome();
+    }
+
+    private void LayoutChrome()
+    {
+        if (!_chromeReady || _inChrome)
+            return;
+
+        int w = ClientSize.Width;
+        int h = ClientSize.Height;
+        if (w < 200 || h < 200)
+            return;
+
+        _inChrome = true;
+        try
         {
-            Activate();
-            BringToFront();
+            _header.Dock = DockStyle.None;
+            _header.SetBounds(0, 0, w, HeaderH);
+
+            int bodyTop = HeaderH;
+            int bodyH = Math.Max(80, h - HeaderH - FooterH);
+            _side.SetBounds(0, bodyTop, SideW, bodyH);
+            _nav.SetBounds(10, 12, Math.Max(40, _side.Width - 20), Math.Max(40, _side.Height - 24));
+            _content.SetBounds(SideW, bodyTop, Math.Max(80, w - SideW), bodyH);
+            _footer.SetBounds(0, h - FooterH, w, FooterH);
+            LayoutFooter();
             LayoutActiveSection();
-        };
+        }
+        finally
+        {
+            _inChrome = false;
+        }
+    }
+
+    private void LayoutFooter()
+    {
+        int x = _footer.Width - 20;
+        foreach (var button in new[] { _btnCancel, _btnOk, _btnApply })
+        {
+            x -= button.Width;
+            button.Location = new Point(Math.Max(12, x), Math.Max(0, (_footer.Height - button.Height) / 2));
+            x -= 10;
+        }
     }
 
     private void ShowSection(string id)
     {
-        _generalPanel.Visible = id == "general";
-        _monitoringPanel.Visible = id == "monitoring";
-        _appearancePanel.Visible = id == "appearance";
-        _aboutPanel.Visible = id == "about";
+        _section = id;
+        foreach (var page in Pages())
+        {
+            bool on = page == ActivePage();
+            page.Visible = on;
+            if (!on)
+                page.Size = new Size(0, 0);
+        }
+
         LayoutActiveSection();
+        if (_content.IsHandleCreated)
+        {
+            _content.AutoScrollPosition = Point.Empty;
+            ActivePage().Location = Point.Empty;
+        }
     }
 
     private void LayoutActiveSection()
     {
-        Panel? active =
-            _generalPanel.Visible ? _generalPanel :
-            _monitoringPanel.Visible ? _monitoringPanel :
-            _appearancePanel.Visible ? _appearancePanel :
-            _aboutPanel.Visible ? _aboutPanel : null;
+        if (_content.ClientSize.Width < 40)
+            return;
 
-        if (active is null) return;
+        var active = ActivePage();
+        active.Visible = true;
 
-        int viewW = Math.Max(360, _contentHost.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
-        active.SuspendLayout();
-        active.Location = new Point(0, 0);
-        active.Width = viewW;
-
-        foreach (Control c in active.Controls)
+        int viewW = _content.ClientSize.Width;
+        int height = active.Reflow(viewW);
+        if (height > _content.ClientSize.Height && _content.ClientSize.Height > 0)
         {
-            if (c is AntdUI.Panel card)
-            {
-                card.Left = 24;
-                card.Width = Math.Max(300, viewW - 48);
-                int bottom = 20;
-                foreach (Control child in card.Controls)
-                    bottom = Math.Max(bottom, child.Bottom);
-                card.Height = bottom + 24;
-            }
+            int bar = SystemInformation.VerticalScrollBarWidth;
+            viewW = Math.Max(240, _content.ClientSize.Width - bar - 2);
+            height = active.Reflow(viewW);
         }
 
-        int sectionBottom = 20;
-        foreach (Control c in active.Controls)
-            sectionBottom = Math.Max(sectionBottom, c.Bottom);
-        active.Height = sectionBottom + 32;
-        active.ResumeLayout();
-
-        _contentHost.AutoScrollMinSize = new Size(0, active.Height + 8);
-        _contentHost.AutoScrollPosition = Point.Empty;
+        active.Location = Point.Empty;
+        _content.AutoScrollMinSize = new Size(0, height + 8);
     }
 
-    private Panel BuildGeneral()
+    private StackPanel ActivePage() => _section switch
     {
-        var p = new Panel();
-        p.Controls.Add(SectionTitle("General", 24, 16));
+        "monitoring" => _monitoringPage,
+        "appearance" => _appearancePage,
+        "about" => _aboutPage,
+        _ => _generalPage
+    };
 
-        var card = MakeCard(24, 72, 600, 260);
-        int y = 20;
-        card.Controls.Add(CardHeading("Startup", 20, y));
-        y += 34;
-        _startWithWindows = MakeSwitchRow(card, "Start with Windows", 20, y, _draft.StartWithWindows);
-        y += 52;
-
-        card.Controls.Add(CardHeading("Update frequency", 20, y));
-        y += 34;
-        card.Controls.Add(MutedLabel("Sample interval (ms), 100 – 10000", 20, y));
-        y += 28;
-        _intervalMs = MakeNumber(card, 20, y, 140, _draft.UpdateIntervalMs, 100, 10000);
-        y += 52;
-
-        card.Controls.Add(CardHeading("Show / hide shortcut", 20, y));
-        y += 34;
-        _hotkeyEnabled = MakeSwitchRow(card, "Enable hotkey", 20, y, _draft.HotkeyEnabled);
-        y += 44;
-        card.Controls.Add(MutedLabel(
-            "Default: " + HotkeyHook.Format(_draft.HotkeyModifiers, _draft.HotkeyVirtualKey),
-            20, y));
-
-        p.Controls.Add(card);
-        return p;
+    private IEnumerable<StackPanel> Pages()
+    {
+        yield return _generalPage;
+        yield return _monitoringPage;
+        yield return _appearancePage;
+        yield return _aboutPage;
     }
 
-    private Panel BuildMonitoring()
+    private StackPanel BuildGeneral()
     {
-        var p = new Panel();
-        p.Controls.Add(SectionTitle("Monitoring", 24, 16));
+        var page = NewPage();
+        page.Add(PageTitle("General"));
 
-        var card = MakeCard(24, 72, 600, 620);
-        int y = 20;
-        y = AddGroupHeading(card, "Processor & Memory", y);
-        _cpu = MakeSwitchRow(card, "CPU Usage", 20, y, _draft.Metrics.Cpu); y += 42;
-        _memory = MakeSwitchRow(card, "RAM Usage", 20, y, _draft.Metrics.Memory); y += 50;
+        var startup = NewCard();
+        startup.Add(Heading("Startup"));
+        startup.Add(SwitchRow("Start with Windows", _draft.StartWithWindows, out _startWithWindows));
+        page.Add(startup);
 
-        y = AddGroupHeading(card, "Graphics", y);
-        _gpu = MakeSwitchRow(card, "GPU Usage", 20, y, _draft.Metrics.Gpu); y += 42;
-        _vram = MakeSwitchRow(card, "VRAM Usage", 20, y, _draft.Metrics.Vram); y += 50;
+        var updates = NewCard();
+        updates.Add(Heading("Update frequency"));
+        updates.Add(Hint("How often the numbers refresh, in milliseconds (100 – 10000).", 36));
+        updates.Add(NumberRow(MakeNumber(_draft.UpdateIntervalMs, 100, 10000, 140), out _intervalMs));
+        page.Add(updates);
 
-        y = AddGroupHeading(card, "Network", y);
-        _netSend = MakeSwitchRow(card, "Upload Speed", 20, y, _draft.Metrics.NetSend); y += 42;
-        _netRecv = MakeSwitchRow(card, "Download Speed", 20, y, _draft.Metrics.NetRecv); y += 50;
-
-        y = AddGroupHeading(card, "Disk", y);
-        _diskRead = MakeSwitchRow(card, "Disk Read", 20, y, _draft.Metrics.DiskRead); y += 42;
-        _diskWrite = MakeSwitchRow(card, "Disk Write", 20, y, _draft.Metrics.DiskWrite); y += 50;
-
-        y = AddGroupHeading(card, "Transfer units", y);
-        card.Controls.Add(MutedLabel("Network and disk rates", 20, y));
-        y += 28;
-        _rateUnitSeg = MakeSegmented(card, 20, y, 300, ["Bytes/s", "Bits/s"],
-            _draft.RateUnit == RateUnit.Bits ? 1 : 0);
-
-        p.Controls.Add(card);
-        return p;
+        string hotkey = HotkeyHook.Format(_draft.HotkeyModifiers, _draft.HotkeyVirtualKey);
+        var shortcut = NewCard();
+        shortcut.Add(Heading("Show / hide shortcut"));
+        shortcut.Add(SwitchRow("Enable hotkey", _draft.HotkeyEnabled, out _hotkeyEnabled));
+        shortcut.Add(Hint($"{hotkey} removes the overlay, or brings it back. Sampling pauses while it is hidden.", 48));
+        page.Add(shortcut);
+        return page;
     }
 
-    private Panel BuildAppearance()
+    private StackPanel BuildMonitoring()
     {
-        var p = new Panel();
-        p.Controls.Add(SectionTitle("Appearance", 24, 16));
+        var page = NewPage();
+        page.Add(PageTitle("Monitoring"));
 
-        var card = MakeCard(24, 72, 600, 720);
-        int y = 20;
+        var metrics = NewCard();
+        metrics.Add(Heading("Processor and memory"));
+        metrics.Add(SwitchRow("CPU usage", _draft.Metrics.Cpu, out _cpu));
+        metrics.Add(SwitchRow("RAM usage", _draft.Metrics.Memory, out _memory));
+        metrics.Add(Heading("Graphics"));
+        metrics.Add(SwitchRow("GPU usage", _draft.Metrics.Gpu, out _gpu));
+        metrics.Add(SwitchRow("VRAM usage", _draft.Metrics.Vram, out _vram));
+        metrics.Add(Heading("Network"));
+        metrics.Add(SwitchRow("Upload speed", _draft.Metrics.NetSend, out _netSend));
+        metrics.Add(SwitchRow("Download speed", _draft.Metrics.NetRecv, out _netRecv));
+        metrics.Add(Heading("Disk"));
+        metrics.Add(SwitchRow("Disk read", _draft.Metrics.DiskRead, out _diskRead));
+        metrics.Add(SwitchRow("Disk write", _draft.Metrics.DiskWrite, out _diskWrite));
+        page.Add(metrics);
 
-        card.Controls.Add(CardHeading("Size", 20, y));
-        y += 32;
-        _densitySeg = MakeSegmented(card, 20, y, 300, ["Default", "Compact"],
-            _draft.Density == OverlayDensity.Compact ? 1 : 0);
-        _densitySeg.SelectIndexChanged += (_, _) => SyncFontEditors();
-        y += 28;
-        card.Controls.Add(MutedLabel("Compact hides icons for a denser bar.", 20, y));
-        y += 40;
+        var units = NewCard();
+        units.Add(Heading("Transfer units"));
+        units.Add(Hint("Used for network and disk speeds.", 24));
+        units.Add(SegmentRow(["Bytes/s", "Bits/s"], _draft.RateUnit == RateUnit.Bits ? 1 : 0, out _rateUnitSeg));
+        page.Add(units);
+        return page;
+    }
 
-        card.Controls.Add(CardHeading("Font sizes (Default)", 20, y));
-        y += 32;
-        card.Controls.Add(MutedLabel("Value  /  Label (pt)", 20, y));
-        y += 26;
-        _defaultValuePt = MakeNumber(card, 20, y, 90, (decimal)_draft.DefaultValueFontPt, 7, 28);
-        _defaultLabelPt = MakeNumber(card, 130, y, 90, (decimal)_draft.DefaultLabelFontPt, 6, 18);
-        y += 48;
+    private StackPanel BuildAppearance()
+    {
+        var page = NewPage();
+        page.Add(PageTitle("Appearance"));
 
-        card.Controls.Add(CardHeading("Font sizes (Compact)", 20, y));
-        y += 32;
-        card.Controls.Add(MutedLabel("Value  /  Label (pt)", 20, y));
-        y += 26;
-        _compactValuePt = MakeNumber(card, 20, y, 90, (decimal)_draft.CompactValueFontPt, 7, 28);
-        _compactLabelPt = MakeNumber(card, 130, y, 90, (decimal)_draft.CompactLabelFontPt, 6, 18);
-        y += 48;
+        var size = NewCard();
+        size.Add(Heading("Size"));
+        size.Add(SegmentRow(["Default", "Compact"], _draft.Density == OverlayDensity.Compact ? 1 : 0, out _densitySeg));
+        size.Add(Hint("Compact hides the icons. Color still marks each metric, so upload and disk write stay distinct.", 40));
+        size.Add(Heading("Font sizes (Default)"));
+        size.Add(CaptionRow("Value", "Label (pt)"));
+        size.Add(FontRow(
+            MakeNumber((decimal)_draft.DefaultValueFontPt, 7, 28),
+            MakeNumber((decimal)_draft.DefaultLabelFontPt, 6, 18),
+            out _defaultValuePt,
+            out _defaultLabelPt));
+        size.Add(Heading("Font sizes (Compact)"));
+        size.Add(CaptionRow("Value", "Label (pt)"));
+        size.Add(FontRow(
+            MakeNumber((decimal)_draft.CompactValueFontPt, 7, 28),
+            MakeNumber((decimal)_draft.CompactLabelFontPt, 6, 18),
+            out _compactValuePt,
+            out _compactLabelPt));
+        page.Add(size);
 
-        card.Controls.Add(CardHeading("Orientation", 20, y));
-        y += 32;
-        _orientSeg = MakeSegmented(card, 20, y, 300, ["Horizontal", "Vertical"],
-            _draft.Orientation == OverlayOrientation.Vertical ? 1 : 0);
-        y += 52;
-
-        card.Controls.Add(CardHeading("Placement", 20, y));
-        y += 32;
-        _placeSeg = MakeSegmented(card, 20, y, 300, ["Taskbar", "Floating"],
-            _draft.PlacementMode == PlacementMode.Floating ? 1 : 0);
-        _placeSeg.SelectIndexChanged += (_, _) => SyncFloatingControls();
-        y += 52;
-
-        card.Controls.Add(CardHeading("Edge position (floating)", 20, y));
-        y += 32;
-        _edgePreset = new AntdUI.Select
-        {
-            Location = new Point(20, y),
-            Size = new Size(220, 36),
-            List = true,
-            BackColor = BgCard,
-            ForeColor = TextPrimary
-        };
-        _edgePreset.Items.Add(new AntdUI.SelectItem("None"));
-        _edgePreset.Items.Add(new AntdUI.SelectItem("Left"));
-        _edgePreset.Items.Add(new AntdUI.SelectItem("Right"));
-        _edgePreset.Items.Add(new AntdUI.SelectItem("Top"));
-        _edgePreset.Items.Add(new AntdUI.SelectItem("Bottom"));
-        _edgePreset.SelectedIndex = Math.Clamp((int)_draft.EdgePreset, 0, 4);
-        card.Controls.Add(_edgePreset);
-        y += 52;
-
-        card.Controls.Add(CardHeading("Opacity", 20, y));
-        y += 32;
-        _opacity = new AntdUI.Slider
-        {
-            Location = new Point(20, y),
-            Size = new Size(280, 28),
-            MinValue = 50,
-            MaxValue = 100,
-            Value = (int)Math.Round(Math.Clamp(_draft.Opacity, 0.5, 1.0) * 100),
-            ShowValue = false
-        };
-        _opacityValue = new AntdUI.Label
-        {
-            Text = $"{_opacity.Value}%",
-            Location = new Point(314, y + 4),
-            AutoSizeMode = AntdUI.TAutoSize.Auto,
-            ForeColor = TextMuted
-        };
-        _opacity.ValueChanged += (_, e) =>
-        {
-            if (_opacityValue != null)
-                _opacityValue.Text = $"{e.Value}%";
-        };
-        card.Controls.Add(_opacity);
-        card.Controls.Add(_opacityValue);
-        y += 48;
-
-        _alwaysOnTop = MakeSwitchRow(card, "Always on top (floating)", 20, y, _draft.AlwaysOnTop);
-        y += 52;
-
+        var layout = NewCard();
+        layout.Add(Heading("Orientation"));
+        layout.Add(SegmentRow(["Horizontal", "Vertical"], _draft.Orientation == OverlayOrientation.Vertical ? 1 : 0, out _orientSeg));
+        layout.Add(Heading("Placement"));
+        layout.Add(SegmentRow(["Taskbar", "Floating"], _draft.PlacementMode == PlacementMode.Floating ? 1 : 0, out var placeSeg));
+        _placeSeg = placeSeg;
+        placeSeg.SelectIndexChanged += (_, _) => SyncFloatingControls();
+        layout.Add(Heading("Edge position (floating)"));
+        layout.Add(EdgeRow());
+        layout.Add(Heading("Opacity"));
+        layout.Add(OpacityRow());
+        layout.Add(SwitchRow("Always on top (floating)", _draft.AlwaysOnTop, out _alwaysOnTop));
         var reset = MakeButton("Reset position", AntdUI.TTypeMini.Default);
-        reset.Location = new Point(20, y);
-        reset.Size = new Size(140, 34);
+        reset.Size = new Size(150, 34);
         reset.Click += (_, _) =>
         {
-            if (_edgePreset != null) _edgePreset.SelectedIndex = 0;
+            if (_edgePreset != null)
+                _edgePreset.SelectedIndex = 0;
             PullFromUi();
             _draft.FloatingX = int.MinValue;
             _draft.FloatingY = int.MinValue;
@@ -405,42 +386,61 @@ internal sealed class SettingsForm : AntdUI.Window
             _draft.EdgePreset = EdgePreset.None;
             _apply(_draft.Clone());
         };
-        card.Controls.Add(reset);
+        layout.Add(ButtonRow(reset));
+        page.Add(layout);
 
-        p.Controls.Add(card);
-        return p;
+        var colors = NewCard();
+        colors.Add(Heading("Metric colors"));
+        colors.Add(Hint("Each metric uses this color for its value and the bar beside it. Click a swatch to change it.", 40));
+        foreach (var (kind, name) in MetricColors.All)
+        {
+            var row = ColorRow(name, MetricColors.Resolve(_draft.Colors, kind), out var swatch);
+            _swatches[kind] = swatch;
+            colors.Add(row);
+        }
+
+        var resetColors = MakeButton("Reset colors", AntdUI.TTypeMini.Default);
+        resetColors.Size = new Size(140, 34);
+        resetColors.Click += (_, _) =>
+        {
+            var defaults = new MetricPalette();
+            foreach (var (kind, swatch) in _swatches)
+                swatch.SetColor(MetricColors.Resolve(defaults, kind));
+        };
+        colors.Add(ButtonRow(resetColors));
+        page.Add(colors);
+        return page;
     }
 
-    private Panel BuildAbout()
+    private StackPanel BuildAbout()
     {
-        var p = new Panel();
-        p.Controls.Add(SectionTitle("About", 24, 16));
+        var page = NewPage();
+        page.Add(PageTitle("About"));
         string ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
-        var card = MakeCard(24, 72, 600, 160);
-        card.Controls.Add(new AntdUI.Label
+        var card = NewCard();
+        card.Add(new Label
         {
             Text = "Taskbar Live Stats",
-            Font = new Font("Segoe UI Semibold", 14f),
-            Location = new Point(24, 28),
-            AutoSizeMode = AntdUI.TAutoSize.Auto,
-            ForeColor = TextPrimary
+            AutoSize = false,
+            Height = 32,
+            Font = new Font("Segoe UI Semibold", 14f, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = TextPrimary,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
         });
-        card.Controls.Add(new AntdUI.Label
+        card.Add(new Label
         {
             Text = $"Version {ver}",
-            Location = new Point(24, 64),
-            AutoSizeMode = AntdUI.TAutoSize.Auto,
-            ForeColor = TextMuted
+            AutoSize = false,
+            Height = 24,
+            Font = _bodyFont,
+            ForeColor = TextMuted,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
         });
-        card.Controls.Add(new AntdUI.Label
-        {
-            Text = "Live CPU, memory, GPU, network, and disk stats on your desktop.",
-            Location = new Point(24, 96),
-            AutoSizeMode = AntdUI.TAutoSize.Auto,
-            ForeColor = TextMuted
-        });
-        p.Controls.Add(card);
-        return p;
+        card.Add(Hint("Live CPU, memory, GPU, network, and disk stats on your desktop.", 36));
+        page.Add(card);
+        return page;
     }
 
     private void SyncFloatingControls()
@@ -449,12 +449,6 @@ internal sealed class SettingsForm : AntdUI.Window
         if (_edgePreset != null) _edgePreset.Enabled = floating;
         if (_opacity != null) _opacity.Enabled = floating;
         if (_alwaysOnTop != null) _alwaysOnTop.Enabled = floating;
-    }
-
-    private void SyncFontEditors()
-    {
-        // Both sets are always editable; active density only chooses which pair the overlay uses.
-        bool _ = _densitySeg?.SelectIndex == 1;
     }
 
     private void PullFromUi()
@@ -504,103 +498,256 @@ internal sealed class SettingsForm : AntdUI.Window
 
         if (_alwaysOnTop != null)
             _draft.AlwaysOnTop = _alwaysOnTop.Checked;
+
+        _draft.Colors ??= new MetricPalette();
+        foreach (var (kind, swatch) in _swatches)
+            MetricColors.Assign(_draft.Colors, kind, swatch.BackColor);
     }
 
-    private static AntdUI.Label SectionTitle(string text, int x, int y) => new()
+    private StackPanel NewPage() => new(card: false);
+
+    private StackPanel NewCard() => new(card: true);
+
+    private Label PageTitle(string text) => new()
     {
         Text = text,
-        Font = new Font("Segoe UI Semibold", 22f),
+        AutoSize = false,
+        Height = 46,
+        Font = _titleFont,
         ForeColor = TextPrimary,
-        Location = new Point(x, y),
-        AutoSizeMode = AntdUI.TAutoSize.Auto
+        BackColor = BgApp,
+        TextAlign = ContentAlignment.MiddleLeft
     };
 
-    private static AntdUI.Label CardHeading(string text, int x, int y) => new()
+    private Label Heading(string text) => new()
     {
         Text = text,
-        Font = new Font("Segoe UI Semibold", 11f),
+        AutoSize = false,
+        Height = 32,
+        Font = _headingFont,
         ForeColor = TextPrimary,
-        Location = new Point(x, y),
-        AutoSizeMode = AntdUI.TAutoSize.Auto
+        BackColor = BgCard,
+        TextAlign = ContentAlignment.BottomLeft
     };
 
-    private static AntdUI.Label MutedLabel(string text, int x, int y) => new()
+    private Label Hint(string text, int height) => new()
     {
         Text = text,
-        Location = new Point(x, y),
-        AutoSizeMode = AntdUI.TAutoSize.Auto,
-        ForeColor = TextMuted
+        AutoSize = false,
+        Height = height,
+        Font = _hintFont,
+        ForeColor = TextMuted,
+        BackColor = BgCard,
+        TextAlign = ContentAlignment.TopLeft
     };
 
-    private static AntdUI.Panel MakeCard(int x, int y, int w, int h) => new()
+    private Panel SwitchRow(string text, bool isChecked, out AntdUI.Switch toggle)
     {
-        Location = new Point(x, y),
-        Size = new Size(w, h),
-        Radius = 12,
-        Shadow = 8,
-        ShadowOpacity = 0.22f,
-        Back = BgCard,
-        BorderWidth = 1,
-        BorderColor = Color.FromArgb(55, 55, 60),
-        InnerPadding = new Padding(12)
-    };
-
-    private static int AddGroupHeading(Control parent, string title, int y)
-    {
-        parent.Controls.Add(CardHeading(title, 20, y));
-        return y + 34;
-    }
-
-    private static AntdUI.Switch MakeSwitchRow(Control parent, string text, int x, int y, bool isChecked)
-    {
-        parent.Controls.Add(new AntdUI.Label
+        var row = new Panel { Height = 40, BackColor = BgCard, Margin = Padding.Empty };
+        var label = new Label
         {
             Text = text,
-            Location = new Point(x, y + 6),
-            AutoSizeMode = AntdUI.TAutoSize.Auto,
-            ForeColor = TextPrimary
-        });
-
-        var sw = new AntdUI.Switch
+            AutoSize = false,
+            Font = _bodyFont,
+            ForeColor = TextPrimary,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        toggle = new AntdUI.Switch
         {
-            Location = new Point(x + 320, y),
             Size = new Size(52, 28),
             Checked = isChecked
         };
-        parent.Controls.Add(sw);
-        return sw;
+        var sw = toggle;
+        row.Controls.Add(label);
+        row.Controls.Add(sw);
+        row.Resize += (_, _) =>
+        {
+            sw.Left = Math.Max(0, row.Width - sw.Width - 2);
+            sw.Top = Math.Max(0, (row.Height - sw.Height) / 2);
+            label.SetBounds(0, 0, Math.Max(20, sw.Left - 12), row.Height);
+            sw.BringToFront();
+        };
+        return row;
     }
 
-    private static AntdUI.Segmented MakeSegmented(Control parent, int x, int y, int width, string[] items, int selected)
+    private Panel SegmentRow(string[] items, int selected, out AntdUI.Segmented segmented, int maxWidth = 440)
     {
-        var seg = new AntdUI.Segmented
+        var row = new Panel { Height = 52, BackColor = BgCard, Margin = Padding.Empty };
+        segmented = new AntdUI.Segmented
         {
-            Location = new Point(x, y),
-            Size = new Size(width, 36),
+            Size = new Size(Math.Min(maxWidth, 440), 36),
             Full = true
         };
         foreach (string item in items)
-            seg.Items.Add(new AntdUI.SegmentedItem { Text = item });
-        seg.SelectIndex = selected;
-        parent.Controls.Add(seg);
-        return seg;
+            segmented.Items.Add(new AntdUI.SegmentedItem { Text = item });
+        segmented.SelectIndex = selected;
+        var seg = segmented;
+        int cap = maxWidth;
+        row.Controls.Add(seg);
+        row.Resize += (_, _) =>
+        {
+            seg.Width = Math.Min(cap, Math.Max(200, row.Width));
+            seg.Height = 36;
+            seg.Left = 0;
+            seg.Top = Math.Max(0, (row.Height - seg.Height) / 2);
+        };
+        return row;
     }
 
-    private static AntdUI.InputNumber MakeNumber(Control parent, int x, int y, int width, decimal value, decimal min, decimal max)
+    private static AntdUI.InputNumber MakeNumber(decimal value, decimal min, decimal max, int width = 100) => new()
     {
-        var num = new AntdUI.InputNumber
+        Size = new Size(width, 34),
+        Minimum = min,
+        Maximum = max,
+        Value = Math.Clamp(value, min, max),
+        DecimalPlaces = value % 1m == 0 ? 0 : 1,
+        BackColor = Color.FromArgb(48, 48, 52),
+        ForeColor = TextPrimary
+    };
+
+    private Panel NumberRow(AntdUI.InputNumber number, out AntdUI.InputNumber field)
+    {
+        field = number;
+        var row = new Panel { Height = 42, BackColor = BgCard, Margin = Padding.Empty };
+        number.Location = new Point(0, 4);
+        row.Controls.Add(number);
+        return row;
+    }
+
+    private Panel CaptionRow(string left, string right)
+    {
+        var row = new Panel { Height = 22, BackColor = BgCard, Margin = Padding.Empty };
+        row.Controls.Add(new Label
         {
-            Location = new Point(x, y),
-            Size = new Size(width, 34),
-            Minimum = min,
-            Maximum = max,
-            Value = Math.Clamp(value, min, max),
-            DecimalPlaces = value % 1m == 0 ? 0 : 1,
-            BackColor = Color.FromArgb(48, 48, 52),
+            Text = left,
+            AutoSize = false,
+            Bounds = new Rectangle(0, 0, 100, 22),
+            Font = _hintFont,
+            ForeColor = TextMuted,
+            BackColor = BgCard
+        });
+        row.Controls.Add(new Label
+        {
+            Text = right,
+            AutoSize = false,
+            Bounds = new Rectangle(116, 0, 120, 22),
+            Font = _hintFont,
+            ForeColor = TextMuted,
+            BackColor = BgCard
+        });
+        return row;
+    }
+
+    private static Panel FontRow(
+        AntdUI.InputNumber valueBox,
+        AntdUI.InputNumber labelBox,
+        out AntdUI.InputNumber valueField,
+        out AntdUI.InputNumber labelField)
+    {
+        valueField = valueBox;
+        labelField = labelBox;
+        var row = new Panel { Height = 42, BackColor = BgCard, Margin = Padding.Empty };
+        valueBox.Location = new Point(0, 4);
+        labelBox.Location = new Point(116, 4);
+        row.Controls.Add(valueBox);
+        row.Controls.Add(labelBox);
+        return row;
+    }
+
+    private Panel EdgeRow()
+    {
+        _edgePreset = new AntdUI.Select
+        {
+            Size = new Size(240, 36),
+            List = true,
+            BackColor = BgCard,
             ForeColor = TextPrimary
         };
-        parent.Controls.Add(num);
-        return num;
+        _edgePreset.Items.Add(new AntdUI.SelectItem("None"));
+        _edgePreset.Items.Add(new AntdUI.SelectItem("Left"));
+        _edgePreset.Items.Add(new AntdUI.SelectItem("Right"));
+        _edgePreset.Items.Add(new AntdUI.SelectItem("Top"));
+        _edgePreset.Items.Add(new AntdUI.SelectItem("Bottom"));
+        _edgePreset.SelectedIndex = Math.Clamp((int)_draft.EdgePreset, 0, 4);
+
+        var row = new Panel { Height = 48, BackColor = BgCard, Margin = Padding.Empty };
+        var select = _edgePreset;
+        select.Location = new Point(0, 6);
+        row.Controls.Add(select);
+        return row;
+    }
+
+    private Panel OpacityRow()
+    {
+        int percent = (int)Math.Round(Math.Clamp(_draft.Opacity, 0.5, 1.0) * 100);
+        _opacity = new AntdUI.Slider
+        {
+            Size = new Size(300, 28),
+            MinValue = 50,
+            MaxValue = 100,
+            Value = percent,
+            ShowValue = false
+        };
+        _opacityValue = new Label
+        {
+            Text = $"{percent}%",
+            AutoSize = false,
+            Size = new Size(52, 28),
+            Font = _bodyFont,
+            ForeColor = TextMuted,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var slider = _opacity;
+        var caption = _opacityValue;
+        slider.ValueChanged += (_, e) => caption.Text = $"{e.Value}%";
+
+        var row = new Panel { Height = 40, BackColor = BgCard, Margin = Padding.Empty };
+        row.Controls.Add(slider);
+        row.Controls.Add(caption);
+        row.Resize += (_, _) =>
+        {
+            int captionW = 52;
+            int sliderW = Math.Min(360, Math.Max(120, row.Width - captionW - 12));
+            slider.SetBounds(0, Math.Max(0, (row.Height - slider.Height) / 2), sliderW, slider.Height);
+            caption.Location = new Point(slider.Right + 8, Math.Max(0, (row.Height - caption.Height) / 2));
+        };
+        return row;
+    }
+
+    private Panel ColorRow(string name, Color color, out ColorSwatch swatch)
+    {
+        var row = new Panel { Height = 40, BackColor = BgCard, Margin = Padding.Empty };
+        var label = new Label
+        {
+            Text = name,
+            AutoSize = false,
+            Font = _bodyFont,
+            ForeColor = TextPrimary,
+            BackColor = BgCard,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        swatch = new ColorSwatch(color);
+        var chip = swatch;
+        row.Controls.Add(label);
+        row.Controls.Add(chip);
+        row.Resize += (_, _) =>
+        {
+            chip.Left = Math.Max(0, row.Width - chip.Width - 2);
+            chip.Top = Math.Max(0, (row.Height - chip.Height) / 2);
+            label.SetBounds(0, 0, Math.Max(20, chip.Left - 12), row.Height);
+            chip.BringToFront();
+        };
+        return row;
+    }
+
+    private static Panel ButtonRow(AntdUI.Button button)
+    {
+        var row = new Panel { Height = 44, BackColor = BgCard, Margin = Padding.Empty };
+        button.Location = new Point(0, 5);
+        row.Controls.Add(button);
+        return row;
     }
 
     private static AntdUI.Button MakeButton(string text, AntdUI.TTypeMini type) => new()
@@ -609,6 +756,162 @@ internal sealed class SettingsForm : AntdUI.Window
         Type = type,
         Size = new Size(96, 34),
         Radius = 6,
-        Margin = new Padding(8, 0, 0, 0)
+        Margin = Padding.Empty
     };
+
+    private bool _fontsDisposed;
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (!disposing || _fontsDisposed)
+            return;
+        _fontsDisposed = true;
+        _titleFont.Dispose();
+        _headingFont.Dispose();
+        _bodyFont.Dispose();
+        _hintFont.Dispose();
+    }
+
+    private sealed class StackPanel : Panel
+    {
+        private readonly List<Control> _order = new();
+
+        public bool Bordered { get; }
+        public int Gap { get; }
+        public Padding Insets { get; }
+
+        public StackPanel(bool card)
+        {
+            Bordered = card;
+            BackColor = BgApp;
+            Gap = card ? 10 : 14;
+            Insets = card ? new Padding(20, 14, 20, 16) : new Padding(24, 12, 24, 24);
+            Margin = Padding.Empty;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.ResizeRedraw, true);
+        }
+
+        public void Add(Control control)
+        {
+            _order.Add(control);
+            Controls.Add(control);
+        }
+
+        public int Reflow(int width)
+        {
+            Width = Math.Max(1, width);
+            int y = Insets.Top;
+            int inner = Math.Max(40, Width - Insets.Left - Insets.Right);
+            bool any = false;
+            foreach (Control child in _order)
+            {
+                if (!child.Visible)
+                    continue;
+                any = true;
+                child.Left = Insets.Left;
+                child.Top = y;
+                int height;
+                if (child is StackPanel nested)
+                    height = nested.Reflow(inner);
+                else
+                {
+                    child.Width = inner;
+                    height = child.Height;
+                }
+
+                y += height + Gap;
+            }
+
+            if (any)
+                y -= Gap;
+            Height = Math.Max(1, y + Insets.Bottom);
+            if (Bordered)
+                Invalidate();
+            return Height;
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            if (!Bordered || Width < 2 || Height < 2)
+            {
+                base.OnPaintBackground(e);
+                return;
+            }
+
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(BgApp);
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using var path = Round(rect, 12f);
+            using var brush = new SolidBrush(BgCard);
+            e.Graphics.FillPath(brush, path);
+            using var pen = new Pen(Color.FromArgb(72, 72, 78));
+            e.Graphics.DrawPath(pen, path);
+        }
+
+        private static GraphicsPath Round(RectangleF rect, float radius)
+        {
+            float d = Math.Min(radius * 2f, Math.Min(rect.Width, rect.Height));
+            var path = new GraphicsPath();
+            if (d <= 1f)
+            {
+                path.AddRectangle(rect);
+                return path;
+            }
+
+            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    private sealed class ColorSwatch : Panel
+    {
+        private readonly Label _hex;
+
+        public ColorSwatch(Color color)
+        {
+            Size = new Size(96, 28);
+            Cursor = Cursors.Hand;
+            Margin = Padding.Empty;
+            _hex = new Label
+            {
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point),
+                Cursor = Cursors.Hand
+            };
+            Controls.Add(_hex);
+            SetColor(color);
+            Click += (_, _) => Pick();
+            _hex.Click += (_, _) => Pick();
+        }
+
+        public void SetColor(Color color)
+        {
+            BackColor = color;
+            _hex.BackColor = color;
+            _hex.ForeColor = MetricColors.ContrastText(color);
+            _hex.Text = MetricPalette.ToHex(color);
+        }
+
+        private void Pick()
+        {
+            var owner = FindForm();
+            if (owner == null)
+                return;
+
+            using var dialog = new ColorDialog
+            {
+                Color = BackColor,
+                FullOpen = true,
+                AnyColor = true
+            };
+            if (dialog.ShowDialog(owner) == DialogResult.OK)
+                SetColor(dialog.Color);
+        }
+    }
 }

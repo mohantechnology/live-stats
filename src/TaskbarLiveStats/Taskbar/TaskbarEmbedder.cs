@@ -143,6 +143,9 @@ internal sealed class TaskbarEmbedder : IDisposable
         }
     }
 
+    /// <summary>Give the reserved taskbar slot back to the icon band.</summary>
+    public void ReleaseSlot() => _shrinker.Restore();
+
     public void SetVisible(bool visible)
     {
         _wantVisible = visible;

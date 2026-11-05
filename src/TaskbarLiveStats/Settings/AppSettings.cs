@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace TaskbarLiveStats.Settings;
 
 internal enum OverlayOrientation
@@ -61,6 +63,80 @@ internal sealed class MetricToggles
         Cpu || Memory || Gpu || Vram || NetSend || NetRecv || DiskRead || DiskWrite;
 }
 
+/// <summary>Per-metric accent colors, stored as #RRGGBB.</summary>
+internal sealed class MetricPalette
+{
+    public const string DefaultCpu = "#9FA8DA";
+    public const string DefaultMemory = "#CE93D8";
+    public const string DefaultGpu = "#80CBC4";
+    public const string DefaultVram = "#80DEEA";
+    public const string DefaultNetSend = "#FF6E40";
+    public const string DefaultNetRecv = "#448AFF";
+    public const string DefaultDiskRead = "#E040FB";
+    public const string DefaultDiskWrite = "#EEFF41";
+
+    public string Cpu { get; set; } = DefaultCpu;
+    public string Memory { get; set; } = DefaultMemory;
+    public string Gpu { get; set; } = DefaultGpu;
+    public string Vram { get; set; } = DefaultVram;
+    public string NetSend { get; set; } = DefaultNetSend;
+    public string NetRecv { get; set; } = DefaultNetRecv;
+    public string DiskRead { get; set; } = DefaultDiskRead;
+    public string DiskWrite { get; set; } = DefaultDiskWrite;
+
+    public MetricPalette Clone() => new()
+    {
+        Cpu = Cpu,
+        Memory = Memory,
+        Gpu = Gpu,
+        Vram = Vram,
+        NetSend = NetSend,
+        NetRecv = NetRecv,
+        DiskRead = DiskRead,
+        DiskWrite = DiskWrite
+    };
+
+    public void Normalize()
+    {
+        Cpu = ToHex(Parse(Cpu, DefaultCpu));
+        Memory = ToHex(Parse(Memory, DefaultMemory));
+        Gpu = ToHex(Parse(Gpu, DefaultGpu));
+        Vram = ToHex(Parse(Vram, DefaultVram));
+        NetSend = ToHex(Parse(NetSend, DefaultNetSend));
+        NetRecv = ToHex(Parse(NetRecv, DefaultNetRecv));
+        DiskRead = ToHex(Parse(DiskRead, DefaultDiskRead));
+        DiskWrite = ToHex(Parse(DiskWrite, DefaultDiskWrite));
+    }
+
+    public static Color Parse(string? hex, string fallbackHex)
+    {
+        if (TryParse(hex, out Color color))
+            return color;
+        if (TryParse(fallbackHex, out color))
+            return color;
+        return Color.White;
+    }
+
+    public static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private static bool TryParse(string? hex, out Color color)
+    {
+        color = Color.White;
+        if (string.IsNullOrWhiteSpace(hex))
+            return false;
+
+        string text = hex.Trim();
+        if (text.StartsWith('#'))
+            text = text[1..];
+
+        if (text.Length != 6 || !int.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int rgb))
+            return false;
+
+        color = Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+        return true;
+    }
+}
+
 internal sealed class AppSettings
 {
     public bool StartWithWindows { get; set; } = true;
@@ -96,6 +172,8 @@ internal sealed class AppSettings
     /// <summary>Virtual-key code. Default U.</summary>
     public int HotkeyVirtualKey { get; set; } = HotkeyDefaults.VirtualKey;
 
+    public MetricPalette Colors { get; set; } = new();
+
     public static AppSettings CreateDefaults() => new();
 
     public float ActiveValueFontPt =>
@@ -126,7 +204,8 @@ internal sealed class AppSettings
         UpdateIntervalMs = Math.Clamp(UpdateIntervalMs, 100, 10_000),
         HotkeyEnabled = HotkeyEnabled,
         HotkeyModifiers = HotkeyModifiers,
-        HotkeyVirtualKey = HotkeyVirtualKey
+        HotkeyVirtualKey = HotkeyVirtualKey,
+        Colors = (Colors ?? new MetricPalette()).Clone()
     };
 }
 
