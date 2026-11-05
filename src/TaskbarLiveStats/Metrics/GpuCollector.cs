@@ -1,10 +1,22 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using TaskbarLiveStats.Native;
 
 namespace TaskbarLiveStats.Metrics;
 
 internal sealed class GpuCollector : IDisposable
 {
+    // pid_1234_luid_0x00000000_0x00012F3E_phys_0_eng_0_engtype_3D
+    private static readonly Regex EngineInstanceRegex = new(
+        @"luid_0x(?<luidHigh>[0-9A-Fa-f]+)_0x(?<luidLow>[0-9A-Fa-f]+)_phys_(?<phys>\d+)_eng_(?<eng>\d+)",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    // luid_0x00000000_0x00012F3E_phys_0
+    private static readonly Regex AdapterMemoryRegex = new(
+        @"luid_0x(?<luidHigh>[0-9A-Fa-f]+)_0x(?<luidLow>[0-9A-Fa-f]+)_phys_(?<phys>\d+)",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     private IntPtr _utilQuery;
     private IntPtr _utilCounter;
     private IntPtr _vramQuery;
@@ -16,12 +28,17 @@ internal sealed class GpuCollector : IDisposable
     private bool _utilPrimed;
     private bool _vramPrimed;
     private ulong _dxgiTotal;
+    private string? _primaryLuidPrefix; // "high_low" matching PDH instance names
+    private double _lastGpuPercent;
+    private double _gpuSampleA;
+    private double _gpuSampleB;
+    private int _gpuSampleCount;
 
     public GpuCollector()
     {
         InitUtilization();
         InitVram();
-        _dxgiTotal = QueryDxgiGpuMemoryBudget();
+        (_dxgiTotal, _primaryLuidPrefix) = QueryDxgiPrimaryAdapter();
     }
 
     private void InitUtilization()
@@ -77,15 +94,26 @@ internal sealed class GpuCollector : IDisposable
 
     private double SampleGpuPercent()
     {
-        if (!_utilReady) return 0;
-        if (NativeMethods.PdhCollectQueryData(_utilQuery) != 0) return 0;
+        if (!_utilReady) return _lastGpuPercent;
+        if (NativeMethods.PdhCollectQueryData(_utilQuery) != 0)
+            return _lastGpuPercent;
         if (!_utilPrimed)
         {
             _utilPrimed = true;
-            return 0;
+            return _lastGpuPercent;
         }
 
-        return GetCounterArrayMax(_utilCounter);
+        if (!TryReadCounterArray(_utilCounter, out var items))
+            return _lastGpuPercent;
+
+        double raw = ComputeBusiestEnginePercent(items, _primaryLuidPrefix);
+        // Keep the upper of the last two samples so brief PDH dips don't flash 0%.
+        _gpuSampleB = _gpuSampleA;
+        _gpuSampleA = raw;
+        _gpuSampleCount = Math.Min(_gpuSampleCount + 1, 2);
+        double upper = _gpuSampleCount < 2 ? raw : Math.Max(_gpuSampleA, _gpuSampleB);
+        _lastGpuPercent = upper;
+        return upper;
     }
 
     private ulong SampleVramUsed()
@@ -98,45 +126,105 @@ internal sealed class GpuCollector : IDisposable
             return 0;
         }
 
-        // Task Manager GPU memory ≈ dedicated + shared usage (important for Intel iGPU)
-        double dedicated = GetCounterArrayMaxBytes(_vramDedicatedCounter);
-        double shared = _sharedReady ? GetCounterArrayMaxBytes(_vramSharedCounter) : 0;
-        return (ulong)Math.Max(0, dedicated + shared);
-    }
+        // Pair dedicated + shared per adapter. Prefer the primary (largest) GPU.
+        var dedicatedByAdapter = ReadAdapterMemoryByLuid(_vramDedicatedCounter);
+        var sharedByAdapter = _sharedReady
+            ? ReadAdapterMemoryByLuid(_vramSharedCounter)
+            : new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Prefer engtype_3D engines (Task Manager style). Fall back to max across all engines.
-    /// </summary>
-    private static double GetCounterArrayMax(IntPtr counter)
-    {
-        if (!TryReadCounterArray(counter, out var items))
-            return 0;
-
-        double max3d = 0;
-        double maxAll = 0;
-        bool any3d = false;
-        foreach (var (name, value) in items)
+        if (_primaryLuidPrefix != null)
         {
-            maxAll = Math.Max(maxAll, value);
-            if (name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase))
+            foreach (var key in dedicatedByAdapter.Keys.Union(sharedByAdapter.Keys))
             {
-                any3d = true;
-                max3d = Math.Max(max3d, value);
+                if (!key.StartsWith(_primaryLuidPrefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                dedicatedByAdapter.TryGetValue(key, out double d);
+                sharedByAdapter.TryGetValue(key, out double s);
+                return (ulong)Math.Max(0, d + s);
             }
         }
 
-        return Math.Clamp(any3d ? max3d : maxAll, 0, 100);
+        double best = 0;
+        foreach (var key in dedicatedByAdapter.Keys.Union(sharedByAdapter.Keys))
+        {
+            dedicatedByAdapter.TryGetValue(key, out double d);
+            sharedByAdapter.TryGetValue(key, out double s);
+            best = Math.Max(best, d + s);
+        }
+
+        return (ulong)Math.Max(0, best);
     }
 
-    private static double GetCounterArrayMaxBytes(IntPtr counter)
+    /// <summary>
+    /// Task Manager overall GPU % = utilization of the busiest physical engine
+    /// on the primary adapter. Each PDH instance is (process, engine); sum
+    /// processes per engine, then take max. Falls back to all adapters.
+    /// </summary>
+    private static double ComputeBusiestEnginePercent(
+        List<(string Name, double Value)> items,
+        string? primaryLuidPrefix)
     {
-        if (!TryReadCounterArray(counter, out var items))
-            return 0;
+        var byEngine = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        double fallbackMax = 0;
+        foreach (var (name, value) in items)
+        {
+            fallbackMax = Math.Max(fallbackMax, value);
+            var match = EngineInstanceRegex.Match(name);
+            if (!match.Success) continue;
 
-        double max = 0;
-        foreach (var (_, value) in items)
-            max = Math.Max(max, value);
-        return max;
+            string luid = string.Create(CultureInfo.InvariantCulture,
+                $"{match.Groups["luidHigh"].Value}_{match.Groups["luidLow"].Value}");
+            string key = string.Create(CultureInfo.InvariantCulture,
+                $"{luid}_{match.Groups["phys"].Value}_{match.Groups["eng"].Value}");
+            byEngine[key] = byEngine.GetValueOrDefault(key) + value;
+        }
+
+        if (byEngine.Count == 0)
+            return Math.Clamp(fallbackMax, 0, 100);
+
+        double Busiest(Func<string, bool>? filter)
+        {
+            double best = 0;
+            bool any = false;
+            foreach (var (key, total) in byEngine)
+            {
+                if (filter != null && !filter(key)) continue;
+                any = true;
+                best = Math.Max(best, total);
+            }
+
+            return any ? best : -1;
+        }
+
+        if (!string.IsNullOrEmpty(primaryLuidPrefix))
+        {
+            double primary = Busiest(k =>
+                k.StartsWith(primaryLuidPrefix, StringComparison.OrdinalIgnoreCase));
+            if (primary >= 0)
+                return Math.Clamp(primary, 0, 100);
+        }
+
+        return Math.Clamp(Busiest(null), 0, 100);
+    }
+
+    private static Dictionary<string, double> ReadAdapterMemoryByLuid(IntPtr counter)
+    {
+        var map = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        if (!TryReadCounterArray(counter, out var items))
+            return map;
+
+        foreach (var (name, value) in items)
+        {
+            var match = AdapterMemoryRegex.Match(name);
+            if (!match.Success) continue;
+
+            string key = string.Create(CultureInfo.InvariantCulture,
+                $"{match.Groups["luidHigh"].Value}_{match.Groups["luidLow"].Value}_{match.Groups["phys"].Value}");
+            // One instance per adapter; keep max defensively if duplicates appear.
+            map[key] = Math.Max(map.GetValueOrDefault(key), value);
+        }
+
+        return map;
     }
 
     private static bool TryReadCounterArray(IntPtr counter, out List<(string Name, double Value)> items)
@@ -179,14 +267,16 @@ internal sealed class GpuCollector : IDisposable
     }
 
     /// <summary>
-    /// dGPU: dedicated VRAM. iGPU (small dedicated aperture): dedicated + shared system budget (TM-like).
+    /// Picks the primary hardware GPU (largest budget). dGPU: dedicated VRAM.
+    /// iGPU (small dedicated aperture): dedicated + shared system budget (TM-like).
+    /// Also returns PDH LUID prefix "high_low" for matching engine counters.
     /// </summary>
-    private static ulong QueryDxgiGpuMemoryBudget()
+    private static (ulong Budget, string? LuidPrefix) QueryDxgiPrimaryAdapter()
     {
         Guid iidFactory1 = new("770aae78-f26f-4dba-a829-253c83d1b387");
         int hr = CreateDXGIFactory1(ref iidFactory1, out IntPtr factory);
         if (hr != 0 || factory == IntPtr.Zero)
-            return 0;
+            return (0, null);
 
         try
         {
@@ -194,6 +284,7 @@ internal sealed class GpuCollector : IDisposable
             const uint VendorMicrosoft = 0x1414;
             const ulong OneGb = 1024UL * 1024UL * 1024UL;
             ulong best = 0;
+            string? bestLuid = null;
             for (uint i = 0; i < 8; i++)
             {
                 IntPtr adapter = EnumAdapters1(factory, i);
@@ -214,8 +305,13 @@ internal sealed class GpuCollector : IDisposable
                     ulong shared = unchecked((ulong)desc.SharedSystemMemory);
                     // Discrete cards: dedicated only. iGPU aperture (~128MB): include shared budget.
                     ulong budget = dedicated >= OneGb ? dedicated : dedicated + shared;
-                    if (budget > best)
-                        best = budget;
+                    if (budget <= best) continue;
+
+                    best = budget;
+                    // DXGI LUID is LowPart (u32) + HighPart (i32). PDH uses high then low hex.
+                    uint low = unchecked((uint)(desc.AdapterLuid & 0xFFFFFFFF));
+                    uint high = unchecked((uint)((ulong)desc.AdapterLuid >> 32));
+                    bestLuid = string.Create(CultureInfo.InvariantCulture, $"{high:x8}_{low:x8}");
                 }
                 finally
                 {
@@ -223,7 +319,7 @@ internal sealed class GpuCollector : IDisposable
                 }
             }
 
-            return best;
+            return (best, bestLuid);
         }
         finally
         {
@@ -277,6 +373,10 @@ internal sealed class GpuCollector : IDisposable
     {
         _utilPrimed = false;
         _vramPrimed = false;
+        _gpuSampleA = 0;
+        _gpuSampleB = 0;
+        _gpuSampleCount = 0;
+        // Keep _lastGpuPercent so the UI does not flash 0 across a reset gap.
         if (_utilReady) NativeMethods.PdhCollectQueryData(_utilQuery);
         if (_vramReady) NativeMethods.PdhCollectQueryData(_vramQuery);
     }

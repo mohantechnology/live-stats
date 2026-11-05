@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using TaskbarLiveStats.Metrics;
+using TaskbarLiveStats.Native;
+using TaskbarLiveStats.Settings;
 using TaskbarLiveStats.Taskbar;
 using TaskbarLiveStats.UI;
 
@@ -13,22 +15,55 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly TaskbarWatcher _watcher;
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _showHideItem;
+    private readonly SettingsStore _store = new();
+    private readonly HotkeyHook _hotkey = new();
+    private AppSettings _settings;
+    private SettingsForm? _settingsForm;
+    private bool _userHidden;
 
-    public TrayAppContext()
+    public TrayAppContext(bool openSettingsOnStart = false)
     {
+        _settings = _store.Load(out bool isFirstRun);
+        if (isFirstRun)
+        {
+            _settings.StartWithWindows = true;
+            StartupHelper.SetEnabled(true);
+            _store.Save(_settings);
+        }
+        else
+        {
+            StartupHelper.SetEnabled(_settings.StartWithWindows);
+        }
+
         _window = new StatsWindow();
         _window.Show();
-        _metrics = new MetricsHub(1000);
-        _watcher = new TaskbarWatcher(500);
+        _window.ApplySettings(_settings, forceLayout: true);
+
+        _metrics = new MetricsHub(_settings.UpdateIntervalMs);
+        _watcher = new TaskbarWatcher(200);
 
         _startupItem = new ToolStripMenuItem("Start with Windows")
         {
             Checked = StartupHelper.IsEnabled(),
             CheckOnClick = true
         };
-        _startupItem.CheckedChanged += (_, _) => StartupHelper.SetEnabled(_startupItem.Checked);
+        _startupItem.CheckedChanged += (_, _) =>
+        {
+            _settings.StartWithWindows = _startupItem.Checked;
+            StartupHelper.SetEnabled(_startupItem.Checked);
+            Persist();
+        };
+
+        _showHideItem = new ToolStripMenuItem("Hide live stats")
+        {
+            ShortcutKeyDisplayString = HotkeyHook.Format(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey)
+        };
+        _showHideItem.Click += (_, _) => ToggleOverlayVisibility();
 
         _menu = new ContextMenuStrip();
+        _menu.Items.Add("Settings…", null, (_, _) => OpenSettings());
+        _menu.Items.Add(_showHideItem);
         _menu.Items.Add("Open Task Manager", null, (_, _) => OpenTaskManager());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_startupItem);
@@ -42,16 +77,49 @@ internal sealed class TrayAppContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = _menu
         };
-        _tray.DoubleClick += (_, _) => OpenTaskManager();
+        _tray.DoubleClick += (_, _) => OpenSettings();
 
-        _window.ContextMenuRequested += () => _menu.Show(Cursor.Position);
+        _window.ContextMenuStrip = _menu;
+        _menu.Opening += (_, _) =>
+        {
+            if (_menu.IsHandleCreated)
+            {
+                NativeMethods.SetWindowPos(
+                    _menu.Handle,
+                    NativeMethods.HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+            }
+
+            _showHideItem.Text = _userHidden ? "Show live stats" : "Hide live stats";
+            _showHideItem.ShortcutKeyDisplayString =
+                HotkeyHook.Format(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey);
+        };
+
+        _window.SettingsChanged += () =>
+        {
+            _window.WritePositionTo(_settings);
+            Persist();
+        };
+
+        _window.HotkeyToggleRequested += ToggleOverlayVisibility;
+        _window.HandleCreated += (_, _) =>
+        {
+            _hotkey.Bind(_window.Handle);
+            _hotkey.Apply(_settings);
+        };
+        if (_window.IsHandleCreated)
+        {
+            _hotkey.Bind(_window.Handle);
+            _hotkey.Apply(_settings);
+        }
 
         _metrics.Updated += snap =>
         {
             if (_window.HandlePublic == IntPtr.Zero) return;
             try
             {
-                _tray.Text = TruncateTip(GroupLayout.Tooltip(snap));
+                _tray.Text = TruncateTip(GroupLayout.Tooltip(snap, _settings));
                 _window.UpdateMetrics(snap);
             }
             catch { /* ignore */ }
@@ -59,7 +127,16 @@ internal sealed class TrayAppContext : ApplicationContext
 
         _watcher.VisibilityChanged += visible =>
         {
-            // Metrics follow auto-hide; the hosted child rides with Shell_TrayWnd visually.
+            if (_userHidden)
+                return;
+
+            if (_settings.PlacementMode == PlacementMode.Floating)
+            {
+                _window.SetVisible(true);
+                _metrics.Resume();
+                return;
+            }
+
             _window.SetVisible(visible);
             if (visible) _metrics.Resume();
             else _metrics.Pause();
@@ -67,20 +144,30 @@ internal sealed class TrayAppContext : ApplicationContext
 
         _watcher.ExplorerRestarted += () =>
         {
+            if (_settings.PlacementMode != PlacementMode.Taskbar)
+                return;
             _window.EnsureHostAlive();
+            _hotkey.Bind(_window.HandlePublic);
+            _hotkey.Apply(_settings);
             _window.Reembed(_watcher.Current);
         };
 
         _watcher.Changed += info =>
         {
-            // Only layout against a fully shown taskbar — thin auto-hide strips break slot math.
+            if (_userHidden || _settings.PlacementMode != PlacementMode.Taskbar)
+                return;
             if (info.IsVisible)
                 _window.ApplyTaskbar(info);
         };
 
         _watcher.Start();
 
-        if (_watcher.Current.IsVisible)
+        if (_settings.PlacementMode == PlacementMode.Floating)
+        {
+            _window.SetVisible(true);
+            _metrics.Resume();
+        }
+        else if (_watcher.Current.IsVisible)
         {
             _window.SetVisible(true);
             _window.ApplyTaskbar(_watcher.Current);
@@ -91,7 +178,100 @@ internal sealed class TrayAppContext : ApplicationContext
             _window.SetVisible(false);
             _metrics.Pause();
         }
+
+        if (openSettingsOnStart)
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = 300 };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                OpenSettings();
+            };
+            timer.Start();
+        }
     }
+
+    private void ToggleOverlayVisibility()
+    {
+        _userHidden = !_userHidden;
+        if (_userHidden)
+        {
+            _window.SetVisible(false);
+            _metrics.Pause();
+        }
+        else
+        {
+            if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
+            {
+                _window.SetVisible(true);
+                if (_settings.PlacementMode == PlacementMode.Taskbar)
+                    _window.ApplyTaskbar(_watcher.Current);
+                _metrics.Resume();
+            }
+        }
+    }
+
+    private void OpenSettings()
+    {
+        if (_settingsForm is { IsDisposed: false })
+        {
+            _settingsForm.BringToFront();
+            _settingsForm.Activate();
+            return;
+        }
+
+        _settingsForm = new SettingsForm(_settings, ApplySettings);
+        _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+        _settingsForm.Show();
+        _settingsForm.Activate();
+    }
+
+    private void ApplySettings(AppSettings settings)
+    {
+        bool wasFloating = _settings.PlacementMode == PlacementMode.Floating;
+        _settings = settings.Clone();
+
+        StartupHelper.SetEnabled(_settings.StartWithWindows);
+        if (_startupItem.Checked != _settings.StartWithWindows)
+            _startupItem.Checked = _settings.StartWithWindows;
+
+        _metrics.IntervalMs = _settings.UpdateIntervalMs;
+        _hotkey.Bind(_window.HandlePublic);
+        _hotkey.Apply(_settings);
+
+        _window.ApplySettings(_settings, forceLayout: true);
+        _window.WritePositionTo(_settings);
+        Persist();
+
+        if (_userHidden)
+            return;
+
+        if (_settings.PlacementMode == PlacementMode.Floating)
+        {
+            _window.SetVisible(true);
+            _metrics.Resume();
+        }
+        else if (!wasFloating && _watcher.Current.IsVisible)
+        {
+            _window.ApplyTaskbar(_watcher.Current);
+        }
+        else if (_settings.PlacementMode == PlacementMode.Taskbar)
+        {
+            _window.SetVisible(_watcher.Current.IsVisible);
+            if (_watcher.Current.IsVisible)
+            {
+                _window.ApplyTaskbar(_watcher.Current);
+                _metrics.Resume();
+            }
+            else
+            {
+                _metrics.Pause();
+            }
+        }
+    }
+
+    private void Persist() => _store.Save(_settings);
 
     private static void OpenTaskManager()
     {
@@ -114,6 +294,8 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void Exit()
     {
+        Persist();
+        _hotkey.Dispose();
         _watcher.Stop();
         _metrics.Pause();
         _tray.Visible = false;
@@ -122,6 +304,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _metrics.Dispose();
         _watcher.Dispose();
         _window.Dispose();
+        _settingsForm?.Close();
         ExitThread();
     }
 
@@ -129,6 +312,7 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         if (disposing)
         {
+            _hotkey.Dispose();
             _tray.Dispose();
             _menu.Dispose();
             _metrics.Dispose();

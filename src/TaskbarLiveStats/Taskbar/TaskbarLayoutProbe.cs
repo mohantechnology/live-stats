@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Interop.UIAutomationClient;
 using Microsoft.Win32;
@@ -16,18 +17,22 @@ internal enum TaskbarAlignment
 /// Measures taskbar chrome for slot placement. Prefers real HWNDs (Start / notify /
 /// task list) because Win11 XAML islands often break UI Automation.
 /// </summary>
-internal sealed class TaskbarLayoutProbe
+internal sealed class TaskbarLayoutProbe : IDisposable
 {
-    private static readonly object Sync = new();
-    private static CUIAutomation? _automation;
+    private readonly object _widgetsLock = new();
+    private readonly Thread _uiaThread;
+    private readonly ManualResetEvent _stop = new(false);
+    private readonly ManualResetEvent _poke = new(false);
+    private int _disposed;
 
     private NativeMethods.RECT? _widgets;
+    private NativeMethods.RECT? _uiaWidgets;
+    private NativeMethods.RECT? _uiaStart;
     private NativeMethods.RECT? _start;
     private NativeMethods.RECT? _appList;
     private NativeMethods.RECT? _notify;
     private TaskbarAlignment _alignment = TaskbarAlignment.Unknown;
-    private long _cachedAtTicks;
-    private IntPtr _cachedTray;
+    private IntPtr _uiaTray;
 
     public NativeMethods.RECT? WidgetsRect => _widgets;
     public NativeMethods.RECT? StartRect => _start;
@@ -35,36 +40,41 @@ internal sealed class TaskbarLayoutProbe
     public NativeMethods.RECT? NotifyRect => _notify;
     public TaskbarAlignment Alignment => _alignment;
 
+    public TaskbarLayoutProbe()
+    {
+        _uiaThread = new Thread(UiaLoop)
+        {
+            IsBackground = true,
+            Name = "TaskbarUia",
+        };
+        _uiaThread.SetApartmentState(ApartmentState.STA);
+        _uiaThread.Start();
+    }
+
     public void Refresh(IntPtr trayHwnd, int cacheMs = 400)
     {
+        _ = cacheMs;
         if (trayHwnd == IntPtr.Zero)
             return;
 
-        long now = Environment.TickCount64;
-        if (trayHwnd == _cachedTray && now - _cachedAtTicks < cacheMs)
-            return;
-
-        _cachedTray = trayHwnd;
-        _cachedAtTicks = now;
         _alignment = ReadAlignment();
 
-        // HWND path first — reliable on current Win11 taskbar builds
+        // HWND path is cheap and stays on the UI thread.
         _start = FindStartHwnd(trayHwnd);
         _appList = FindTaskListHwnd(trayHwnd);
         _notify = FindNotifyHwnd(trayHwnd);
 
-        // Optional UIA enrichment (may time out — never block layout on it)
-        try
+        lock (_widgetsLock)
         {
-            var automation = GetAutomation();
-            _widgets = FindBoundsQuick(automation, "WidgetsButton")
-                       ?? FindBoundsQuick(automation, "TaskbarWidgetsButton");
-            _start ??= FindBoundsQuick(automation, "StartButton");
+            if (_uiaWidgets is not null)
+                _widgets = _uiaWidgets;
+            _start ??= _uiaStart;
         }
-        catch
-        {
-            // ignore — HWND fallbacks are enough
-        }
+
+        // Widgets live in the XAML island. Scan them off the UI thread so a
+        // slow UI Automation walk cannot freeze hide/show.
+        Volatile.Write(ref _uiaTray, trayHwnd);
+        _poke.Set();
     }
 
     /// <summary>
@@ -261,16 +271,62 @@ internal sealed class TaskbarLayoutProbe
         return found;
     }
 
-    private static NativeMethods.RECT? FindBoundsQuick(CUIAutomation automation, string automationId)
+    private void UiaLoop()
+    {
+        CUIAutomation? automation = null;
+        try
+        {
+            automation = new CUIAutomation();
+            var handles = new WaitHandle[] { _stop, _poke };
+            while (WaitHandle.WaitAny(handles) != 0)
+            {
+                _poke.Reset();
+                if (Volatile.Read(ref _disposed) != 0)
+                    break;
+
+                IntPtr tray = Volatile.Read(ref _uiaTray);
+                if (tray == IntPtr.Zero || !NativeMethods.IsWindow(tray))
+                    continue;
+
+                try
+                {
+                    IUIAutomationElement root = automation.ElementFromHandle(tray);
+                    NativeMethods.RECT? widgets = FindBounds(automation, root, "WidgetsButton")
+                                                   ?? FindBounds(automation, root, "TaskbarWidgetsButton");
+                    NativeMethods.RECT? start = FindBounds(automation, root, "StartButton");
+                    lock (_widgetsLock)
+                    {
+                        if (widgets is not null)
+                            _uiaWidgets = widgets;
+                        if (start is not null)
+                            _uiaStart = start;
+                    }
+                }
+                catch
+                {
+                    // HWND geometry still places the bar if UIA is busy.
+                }
+            }
+        }
+        catch
+        {
+            // UIA unavailable — placement falls back to the DPI widgets band.
+        }
+        finally
+        {
+            if (automation is not null && Marshal.IsComObject(automation))
+                Marshal.ReleaseComObject(automation);
+        }
+    }
+
+    private static NativeMethods.RECT? FindBounds(CUIAutomation automation, IUIAutomationElement root, string automationId)
     {
         try
         {
-            IUIAutomationElement desktop = automation.GetRootElement();
             var condition = automation.CreatePropertyCondition(
                 UIA_PropertyIds.UIA_AutomationIdPropertyId,
                 automationId);
-            // Children-only first wave is cheaper; Widgets is usually not a direct desktop child
-            IUIAutomationElement? el = desktop.FindFirst(TreeScope.TreeScope_Descendants, condition);
+            IUIAutomationElement? el = root.FindFirst(TreeScope.TreeScope_Descendants, condition);
             if (el is null)
                 return null;
             tagRECT r = el.CurrentBoundingRectangle;
@@ -284,10 +340,16 @@ internal sealed class TaskbarLayoutProbe
         }
     }
 
-    private static CUIAutomation GetAutomation()
+    public void Dispose()
     {
-        lock (Sync)
-            return _automation ??= new CUIAutomation();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        _stop.Set();
+        _poke.Set();
+        if (!_uiaThread.Join(400))
+            return;
+        _stop.Dispose();
+        _poke.Dispose();
     }
 
     private static TaskbarAlignment ReadAlignment()

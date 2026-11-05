@@ -1,0 +1,65 @@
+# Taskbar Live Stats
+
+Live CPU, memory, GPU, network, and disk stats embedded in the Windows taskbar.
+
+## Requirements
+
+- Windows 10/11 (x64)
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to build
+- For framework-dependent publish: [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+## Build and run (development)
+
+From the repo root (`d:\dev_software\taskbar-live-stats`):
+
+```powershell
+dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release
+dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release --no-build
+```
+
+Or build and run in one step:
+
+```powershell
+dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release
+```
+
+Stop the app from the tray icon (right-click → Exit) before rebuilding if the EXE is locked.
+
+## Publish (portable EXE)
+
+Self-contained single-file (no separate .NET install needed on the target PC):
+
+```powershell
+dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release /p:PublishProfile=Trimmed
+```
+
+Output:
+
+```text
+.\publish\TaskbarLiveStats.exe
+```
+
+Run it:
+
+```powershell
+.\publish\TaskbarLiveStats.exe
+```
+
+Smaller build that requires the .NET 8 Desktop Runtime:
+
+```powershell
+dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release /p:PublishProfile=FrameworkDependent
+```
+
+Output:
+
+```text
+.\publish-fd\TaskbarLiveStats.exe
+```
+
+## How GPU % is calculated
+
+- Source: Windows PDH `\GPU Engine(*)\Utilization Percentage`
+- Per-process engine samples are **summed per physical engine**, then the **busiest engine** on the primary GPU is used (same approach as Task Manager)
+- Percentages are **rounded up** (ceiling) so small load does not display as `0%`
+- Failed/empty PDH reads keep the last good GPU value instead of flashing zero

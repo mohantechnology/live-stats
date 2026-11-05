@@ -2,138 +2,268 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using TaskbarLiveStats.Native;
-using TaskbarLiveStats.Taskbar;
+using TaskbarLiveStats.Settings;
 
 namespace TaskbarLiveStats.UI;
 
 internal sealed class StatsRenderer : IDisposable
 {
-    private const int PadX = 8;
-    private const int GroupGap = 12;
-    private const int ColGap = 3;
+    private const int PadX = 10;
+    private const int PadY = 6;
+    private const int BlockGapDefault = 14;
+    private const int BlockGapCompact = 10;
+    private const int IconTextGap = 6;
+    private const int IconBox = 18;
 
     private Bitmap? _bitmap;
     private int _width;
     private int _height;
-    private int _lockedWidth;
+    private OverlayOrientation _orientation = OverlayOrientation.Horizontal;
+    private OverlayDensity _density = OverlayDensity.Default;
+    private float _valueFontPt = 12f;
+    private float _labelFontPt = 8f;
 
-    public Size Measure(MetricGroup[] groups, int taskbarHeight)
+    public OverlayOrientation Orientation
     {
-        // Fill nearly the full taskbar thickness so the reserved slot looks flush
-        int height = Math.Clamp(taskbarHeight - 2, 30, 52);
-        using var font = CreateFont(height);
-        using var unitFont = CreateUnitFont(height);
+        get => _orientation;
+        set => _orientation = value;
+    }
+
+    public OverlayDensity Density
+    {
+        get => _density;
+        set => _density = value;
+    }
+
+    public float ValueFontPt
+    {
+        get => _valueFontPt;
+        set => _valueFontPt = Math.Clamp(value, 7f, 28f);
+    }
+
+    public float LabelFontPt
+    {
+        get => _labelFontPt;
+        set => _labelFontPt = Math.Clamp(value, 6f, 18f);
+    }
+
+    public void ResetSizeLock()
+    {
+        // Size is recomputed every measure from fonts/density; no growth lock.
+    }
+
+    public void ApplyTypography(AppSettings settings)
+    {
+        Orientation = settings.Orientation;
+        Density = settings.Density;
+        ValueFontPt = settings.ActiveValueFontPt;
+        LabelFontPt = settings.ActiveLabelFontPt;
+    }
+
+    public Size Measure(MetricBlock[] blocks, int preferredThickness)
+    {
+        int thickness = Math.Max(28, preferredThickness);
+        bool compact = _density == OverlayDensity.Compact;
+        int gap = compact ? BlockGapCompact : BlockGapDefault;
+
+        using var valueFont = CreateValueFont();
+        using var labelFont = CreateLabelFont();
+        using var iconFont = CreateIconFont();
         using var tmp = new Bitmap(1, 1);
         using var g = Graphics.FromImage(tmp);
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-        float total = PadX;
-        foreach (var group in groups)
-            total += MeasureGroupWidth(g, group, font, unitFont) + GroupGap;
-        total += PadX - GroupGap;
+        if (_orientation == OverlayOrientation.Horizontal)
+        {
+            float total = PadX;
+            float maxBlockH = 0;
+            foreach (var block in blocks)
+            {
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+                total += sz.Width + gap;
+                maxBlockH = Math.Max(maxBlockH, sz.Height);
+            }
 
-        int w = Math.Max(180, (int)Math.Ceiling(total));
-        if (w > _lockedWidth)
-            _lockedWidth = w;
-        return new Size(_lockedWidth > 0 ? _lockedWidth : w, height);
+            total += PadX - gap;
+            int w = Math.Max(100, (int)Math.Ceiling(total));
+            int h = Math.Max(compact ? 26 : thickness, (int)Math.Ceiling(maxBlockH + PadY * 2));
+            return new Size(w, h);
+        }
+        else
+        {
+            float maxW = 0;
+            float blockH = 0;
+            foreach (var block in blocks)
+            {
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+                maxW = Math.Max(maxW, sz.Width);
+                blockH = Math.Max(blockH, sz.Height);
+            }
+
+            int w = Math.Max(100, (int)Math.Ceiling(maxW + PadX * 2));
+            int h = Math.Max(60, (int)Math.Ceiling(PadY * 2 + blocks.Length * blockH + Math.Max(0, blocks.Length - 1) * gap));
+            return new Size(w, h);
+        }
     }
 
-    public void PaintGdi(Graphics g, MetricGroup[] groups, int width, int height)
+    public void PaintGdi(Graphics g, MetricBlock[] blocks, int width, int height)
     {
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-        using var font = CreateFont(height);
-        using var unitFont = CreateUnitFont(height);
-        using var iconBrush = new SolidBrush(ThemeHelper.DimColor);
+        bool compact = _density == OverlayDensity.Compact;
+        int gap = compact ? BlockGapCompact : BlockGapDefault;
+
+        using var valueFont = CreateValueFont();
+        using var labelFont = CreateLabelFont();
+        using var iconFont = CreateIconFont();
         using var valueBrush = new SolidBrush(ThemeHelper.TextColor);
-        using var unitBrush = new SolidBrush(ThemeHelper.DimColor);
+        using var labelBrush = new SolidBrush(ThemeHelper.DimColor);
+        using var iconBrush = new SolidBrush(ThemeHelper.DimColor);
+        using var iconBg = new SolidBrush(Color.FromArgb(28, ThemeHelper.TextColor));
 
-        float x = PadX;
-        float rowH = height / 2f;
-
-        foreach (var group in groups)
+        if (_orientation == OverlayOrientation.Horizontal)
         {
-            float gw = MeasureGroupWidth(g, group, font, unitFont);
-            DrawLine(g, group.Top, x, 1, gw, rowH, font, unitFont, iconBrush, valueBrush, unitBrush);
-            DrawLine(g, group.Bottom, x, rowH - 1, gw, rowH, font, unitFont, iconBrush, valueBrush, unitBrush);
-
-            x += gw + GroupGap;
-            if (x < width - PadX)
+            float x = PadX;
+            foreach (var block in blocks)
             {
-                using var sep = new Pen(Color.FromArgb(40, ThemeHelper.TextColor), 1f);
-                float midY = height * 0.22f;
-                g.DrawLine(sep, x - GroupGap / 2f, midY, x - GroupGap / 2f, height - midY);
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+                float y = (height - sz.Height) / 2f;
+                DrawBlock(g, block, x, y, sz, valueFont, labelFont, iconFont, valueBrush, labelBrush, iconBrush, iconBg, compact);
+                x += sz.Width + gap;
+            }
+        }
+        else
+        {
+            float y = PadY;
+            float colW = Math.Max(0, width - PadX * 2);
+            foreach (var block in blocks)
+            {
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+                var drawSize = new SizeF(Math.Max(sz.Width, colW), sz.Height);
+                DrawBlock(g, block, PadX, y, drawSize, valueFont, labelFont, iconFont, valueBrush, labelBrush, iconBrush, iconBg, compact);
+                y += sz.Height + gap;
             }
         }
     }
 
-    public void PaintLayered(IntPtr hwnd, MetricGroup[] groups, int width, int height, int screenX, int screenY, bool asChild)
+    public bool PaintLayered(
+        IntPtr hwnd,
+        MetricBlock[] blocks,
+        int width,
+        int height,
+        int screenX,
+        int screenY,
+        bool asChild,
+        byte alpha = 255)
     {
         EnsureBitmap(width, height);
         using (var g = Graphics.FromImage(_bitmap!))
         {
             g.Clear(ThemeHelper.TaskbarFillColor);
-            PaintGdi(g, groups, width, height);
+            PaintGdi(g, blocks, width, height);
         }
 
-        UpdateLayered(_bitmap!, hwnd, width, height, screenX, screenY, asChild);
+        return UpdateLayered(_bitmap!, hwnd, width, height, screenX, screenY, asChild, alpha);
     }
 
-    private static void DrawLine(
+    private static SizeF MeasureBlockFixed(
         Graphics g,
-        MetricLine line,
+        MetricBlock block,
+        Font valueFont,
+        Font labelFont,
+        Font iconFont,
+        bool compact)
+    {
+        string reserveValue = GroupLayout.ReserveValue(block.Kind);
+        string reserveLabel = GroupLayout.ReserveLabel(block.Kind);
+        float valueW = Math.Max(
+            g.MeasureString(block.Value, valueFont).Width,
+            g.MeasureString(reserveValue, valueFont).Width);
+        float labelW = Math.Max(
+            g.MeasureString(block.Label, labelFont).Width,
+            g.MeasureString(reserveLabel, labelFont).Width);
+        float textW = Math.Max(valueW, labelW);
+
+        float valueH = valueFont.GetHeight(g);
+        float labelH = labelFont.GetHeight(g);
+        float textH = valueH + labelH - 2;
+
+        if (compact)
+            return new SizeF(textW, textH);
+
+        float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
+        float h = Math.Max(iconSide, textH);
+        float w = iconSide + IconTextGap + textW;
+        return new SizeF(w, h);
+    }
+
+    private static void DrawBlock(
+        Graphics g,
+        MetricBlock block,
         float x,
         float y,
-        float groupWidth,
-        float rowHeight,
-        Font font,
-        Font unitFont,
-        Brush iconBrush,
+        SizeF size,
+        Font valueFont,
+        Font labelFont,
+        Font iconFont,
         Brush valueBrush,
-        Brush unitBrush)
+        Brush labelBrush,
+        Brush iconBrush,
+        Brush iconBg,
+        bool compact)
     {
-        float iconW = g.MeasureString(line.Icon, font).Width;
-        float unitW = string.IsNullOrEmpty(line.Unit) ? 0 : g.MeasureString(line.Unit, unitFont).Width;
-        float valueArea = Math.Max(12, groupWidth - iconW - unitW - ColGap * 2);
+        float textX = x;
+        float textW = size.Width;
 
-        var iconRect = new RectangleF(x, y, iconW, rowHeight);
-        var valueRect = new RectangleF(x + iconW + ColGap, y, valueArea, rowHeight);
-        var unitRect = new RectangleF(x + iconW + ColGap + valueArea, y, unitW + 2, rowHeight);
-
-        using var near = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
-        using var valueFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
-
-        g.DrawString(line.Icon, font, iconBrush, iconRect, near);
-        g.DrawString(line.Value, font, valueBrush, valueRect, valueFmt);
-        if (!string.IsNullOrEmpty(line.Unit))
-            g.DrawString(line.Unit, unitFont, unitBrush, unitRect, near);
-    }
-
-    private static float MeasureGroupWidth(Graphics g, MetricGroup group, Font font, Font unitFont)
-    {
-        float top = LineWidth(g, group.Top, font, unitFont);
-        float bot = LineWidth(g, group.Bottom, font, unitFont);
-        float w = Math.Max(top, bot);
-        float min = group.Top.Icon switch
+        if (!compact)
         {
-            "CPU" or "GPU" => g.MeasureString("VRAM 00.0GB/00.0GB", font).Width,
-            "↑" => g.MeasureString("↑ 000.0 Mbps", font).Width,
-            "R" => g.MeasureString("R 000.0 MB/s", font).Width,
-            _ => w
+            float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
+            float iconY = y + (size.Height - iconSide) / 2f;
+            var iconRect = new RectangleF(x, iconY, iconSide, iconSide);
+            using (var path = RoundedRect(iconRect, 3))
+                g.FillPath(iconBg, path);
+
+            using var center = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap
+            };
+            g.DrawString(block.IconGlyph, iconFont, iconBrush, iconRect, center);
+
+            textX = x + iconSide + IconTextGap;
+            textW = Math.Max(8, size.Width - iconSide - IconTextGap);
+        }
+
+        float valueH = valueFont.GetHeight(g);
+        float labelH = labelFont.GetHeight(g);
+        float stackH = valueH + labelH - 2;
+        float textY = y + (size.Height - stackH) / 2f;
+
+        using var near = new StringFormat
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Near,
+            FormatFlags = StringFormatFlags.NoWrap,
+            Trimming = StringTrimming.EllipsisCharacter
         };
-        return Math.Max(w, min);
+
+        g.DrawString(block.Value, valueFont, valueBrush, new RectangleF(textX, textY, textW, valueH + 2), near);
+        g.DrawString(block.Label, labelFont, labelBrush, new RectangleF(textX, textY + valueH - 2, textW, labelH + 2), near);
     }
 
-    private static float LineWidth(Graphics g, MetricLine line, Font font, Font unitFont)
+    private static GraphicsPath RoundedRect(RectangleF rect, float radius)
     {
-        float icon = g.MeasureString(line.Icon, font).Width;
-        float valueCol = Math.Max(g.MeasureString(line.Value, font).Width, g.MeasureString("000.0GB", font).Width);
-        float unitCol = Math.Max(
-            string.IsNullOrEmpty(line.Unit) ? 0 : g.MeasureString(line.Unit, unitFont).Width,
-            g.MeasureString("/00.0GB", unitFont).Width);
-        return icon + ColGap + valueCol + ColGap + unitCol;
+        float d = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     private void EnsureBitmap(int width, int height)
@@ -147,25 +277,38 @@ internal sealed class StatsRenderer : IDisposable
         _bitmap = new Bitmap(_width, _height, PixelFormat.Format32bppArgb);
     }
 
-    private static Font CreateFont(int height)
+    private Font CreateValueFont() =>
+        new("Segoe UI Semibold", _valueFontPt, FontStyle.Bold, GraphicsUnit.Point);
+
+    private Font CreateLabelFont() =>
+        new("Segoe UI", _labelFontPt, FontStyle.Regular, GraphicsUnit.Point);
+
+    private static Font CreateIconFont()
     {
-        float size = Math.Clamp(height * 0.27f, 7.5f, 9.5f);
-        return new Font("Segoe UI Semibold", size, FontStyle.Regular, GraphicsUnit.Point);
+        const float size = 11f;
+        if (FontFamily.Families.Any(f => f.Name == "Segoe Fluent Icons"))
+            return new Font("Segoe Fluent Icons", size, FontStyle.Regular, GraphicsUnit.Point);
+        if (FontFamily.Families.Any(f => f.Name == "Segoe MDL2 Assets"))
+            return new Font("Segoe MDL2 Assets", size, FontStyle.Regular, GraphicsUnit.Point);
+        return new Font("Segoe UI Symbol", size, FontStyle.Regular, GraphicsUnit.Point);
     }
 
-    private static Font CreateUnitFont(int height)
-    {
-        float size = Math.Clamp(height * 0.23f, 6.5f, 8.5f);
-        return new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
-    }
-
-    private static void UpdateLayered(Bitmap bitmap, IntPtr hwnd, int width, int height, int screenX, int screenY, bool asChild)
+    private static bool UpdateLayered(
+        Bitmap bitmap,
+        IntPtr hwnd,
+        int width,
+        int height,
+        int screenX,
+        int screenY,
+        bool asChild,
+        byte alpha)
     {
         IntPtr screenDc = NativeMethods.GetDC(IntPtr.Zero);
         IntPtr memDc = NativeMethods.CreateCompatibleDC(screenDc);
         IntPtr hBitmap = bitmap.GetHbitmap();
         IntPtr oldBitmap = NativeMethods.SelectObject(memDc, hBitmap);
 
+        bool ok;
         try
         {
             var size = new NativeMethods.SIZE { cx = width, cy = height };
@@ -174,20 +317,19 @@ internal sealed class StatsRenderer : IDisposable
             {
                 BlendOp = NativeMethods.AC_SRC_OVER,
                 BlendFlags = 0,
-                SourceConstantAlpha = 255,
+                SourceConstantAlpha = alpha,
                 AlphaFormat = NativeMethods.AC_SRC_ALPHA
             };
 
             if (asChild)
             {
-                // MSDN: for layered child windows pptDst must be NULL; position comes from SetWindowPos.
-                NativeMethods.UpdateLayeredWindowChild(
+                ok = NativeMethods.UpdateLayeredWindowChild(
                     hwnd, screenDc, IntPtr.Zero, ref size, memDc, ref pointSource, 0, ref blend, NativeMethods.ULW_ALPHA);
             }
             else
             {
                 var topPos = new NativeMethods.POINT { X = screenX, Y = screenY };
-                NativeMethods.UpdateLayeredWindow(
+                ok = NativeMethods.UpdateLayeredWindow(
                     hwnd, screenDc, ref topPos, ref size, memDc, ref pointSource, 0, ref blend, NativeMethods.ULW_ALPHA);
             }
         }
@@ -198,6 +340,8 @@ internal sealed class StatsRenderer : IDisposable
             NativeMethods.DeleteDC(memDc);
             NativeMethods.ReleaseDC(IntPtr.Zero, screenDc);
         }
+
+        return ok;
     }
 
     public void Dispose()

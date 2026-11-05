@@ -5,9 +5,16 @@ namespace TaskbarLiveStats.Taskbar;
 internal sealed class TaskbarWatcher : IDisposable
 {
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly SynchronizationContext? _ui;
+    private readonly NativeMethods.WinEventProc _onEvent;
+    private IntPtr _locationHook;
+    private IntPtr _foregroundHook;
+    private uint _hookedThread;
     private IntPtr _lastTray = IntPtr.Zero;
     private bool _lastVisible = true;
     private bool _initialized;
+    private bool _inTick;
+    private int _queued;
 
     public event Action<TaskbarInfo>? Changed;
     public event Action? ExplorerRestarted;
@@ -15,14 +22,17 @@ internal sealed class TaskbarWatcher : IDisposable
 
     public TaskbarInfo Current { get; private set; }
 
-    public TaskbarWatcher(int intervalMs = 400)
+    public TaskbarWatcher(int intervalMs = 200)
     {
-        _timer = new System.Windows.Forms.Timer { Interval = Math.Max(200, intervalMs) };
+        _ui = SynchronizationContext.Current;
+        _onEvent = OnWinEvent;
+        _timer = new System.Windows.Forms.Timer { Interval = Math.Max(100, intervalMs) };
         _timer.Tick += (_, _) => Tick();
     }
 
     public void Start()
     {
+        EnsureForegroundHook();
         Tick();
         _timer.Start();
     }
@@ -31,22 +41,89 @@ internal sealed class TaskbarWatcher : IDisposable
 
     private void Tick()
     {
-        var info = Query();
-        bool explorerRestarted = _lastTray != IntPtr.Zero && info.TrayHwnd != IntPtr.Zero && info.TrayHwnd != _lastTray;
-        bool visibilityChanged = !_initialized || info.IsVisible != _lastVisible;
+        if (_inTick) return;
+        _inTick = true;
+        try
+        {
+            var info = Query();
+            EnsureLocationHook(info.TrayHwnd);
 
-        Current = info;
-        _lastTray = info.TrayHwnd;
-        _lastVisible = info.IsVisible;
-        _initialized = true;
+            bool explorerRestarted = _lastTray != IntPtr.Zero && info.TrayHwnd != IntPtr.Zero && info.TrayHwnd != _lastTray;
+            bool visibilityChanged = !_initialized || info.IsVisible != _lastVisible;
 
-        if (explorerRestarted)
-            ExplorerRestarted?.Invoke();
+            Current = info;
+            _lastTray = info.TrayHwnd;
+            _lastVisible = info.IsVisible;
+            _initialized = true;
 
-        if (visibilityChanged)
-            VisibilityChanged?.Invoke(info.IsVisible);
+            if (explorerRestarted)
+                ExplorerRestarted?.Invoke();
 
-        Changed?.Invoke(info);
+            if (visibilityChanged)
+                VisibilityChanged?.Invoke(info.IsVisible);
+
+            Changed?.Invoke(info);
+        }
+        finally
+        {
+            _inTick = false;
+        }
+    }
+
+    private void EnsureForegroundHook()
+    {
+        if (_foregroundHook != IntPtr.Zero) return;
+        _foregroundHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero,
+            _onEvent,
+            0,
+            0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+    }
+
+    private void EnsureLocationHook(IntPtr tray)
+    {
+        if (tray == IntPtr.Zero) return;
+        uint thread = NativeMethods.GetWindowThreadProcessId(tray, out _);
+        if (thread == 0 || thread == _hookedThread) return;
+
+        if (_locationHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_locationHook);
+            _locationHook = IntPtr.Zero;
+        }
+
+        _hookedThread = thread;
+        _locationHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_SHOW,
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+            IntPtr.Zero,
+            _onEvent,
+            0,
+            thread,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+    }
+
+    private void OnWinEvent(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint eventThread, uint eventTime)
+    {
+        if (eventType != NativeMethods.EVENT_SYSTEM_FOREGROUND && idObject != NativeMethods.OBJID_WINDOW)
+            return;
+
+        if (Interlocked.Exchange(ref _queued, 1) == 1)
+            return;
+
+        void Run()
+        {
+            Interlocked.Exchange(ref _queued, 0);
+            Tick();
+        }
+
+        if (_ui == null || SynchronizationContext.Current == _ui)
+            Run();
+        else
+            _ui.Post(_ => Run(), null);
     }
 
     public static TaskbarInfo Query()
@@ -105,8 +182,6 @@ internal sealed class TaskbarWatcher : IDisposable
             return thickness >= 20;
 
         // Auto-hide: hidden strip is typically 1–4px; shown bar is ~40–72px depending on DPI.
-        // Use a hysteresis-friendly threshold and also require the bar to sit on the monitor edge
-        // with real thickness — avoids stuck-hidden when the strip animates through mid sizes.
         if (thickness < 24)
             return false;
 
@@ -118,13 +193,36 @@ internal sealed class TaskbarWatcher : IDisposable
         if (!NativeMethods.GetMonitorInfo(monitor, ref mi))
             return thickness >= 32;
 
-        // Shown taskbar occupies a meaningful strip along one monitor edge
-        return thickness >= 28;
+        // Shown taskbar occupies a meaningful strip along one monitor edge.
+        // A full-height bar that has slid mostly off-screen still counts as shown
+        // so an embedded child can ride the animation instead of popping off early.
+        int visibleBand = VisibleThickness(trayRect, mi.rcMonitor, horizontal);
+        return visibleBand >= 8 || thickness >= 28;
+    }
+
+    private static int VisibleThickness(NativeMethods.RECT tray, NativeMethods.RECT monitor, bool horizontal)
+    {
+        if (horizontal)
+        {
+            int top = Math.Max(tray.Top, monitor.Top);
+            int bottom = Math.Min(tray.Bottom, monitor.Bottom);
+            return Math.Max(0, bottom - top);
+        }
+
+        int left = Math.Max(tray.Left, monitor.Left);
+        int right = Math.Min(tray.Right, monitor.Right);
+        return Math.Max(0, right - left);
     }
 
     public void Dispose()
     {
         _timer.Stop();
         _timer.Dispose();
+        if (_locationHook != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_locationHook);
+        if (_foregroundHook != IntPtr.Zero)
+            NativeMethods.UnhookWinEvent(_foregroundHook);
+        _locationHook = IntPtr.Zero;
+        _foregroundHook = IntPtr.Zero;
     }
 }

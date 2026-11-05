@@ -12,6 +12,8 @@ internal static class NativeMethods
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_CLIPSIBLINGS = 0x04000000;
     public const int WS_CLIPCHILDREN = 0x02000000;
+    public const int WS_CAPTION = 0x00C00000;
+    public const int WS_THICKFRAME = 0x00040000;
 
     public const int WS_EX_LAYERED = 0x00080000;
     public const int WS_EX_TRANSPARENT = 0x00000020;
@@ -30,6 +32,7 @@ internal static class NativeMethods
     public const uint SWP_HIDEWINDOW = 0x0080;
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_NOCOPYBITS = 0x0100;
+    public const uint SWP_NOOWNERZORDER = 0x0200;
 
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new(-1);
@@ -37,6 +40,20 @@ internal static class NativeMethods
 
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;
+
+    public const int GWLP_HWNDPARENT = -8;
+    public const uint GW_HWNDNEXT = 2;
+    public const uint GW_HWNDPREV = 3;
+    public const uint GW_OWNER = 4;
+
+    public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_OBJECT_SHOW = 0x8002;
+    public const uint EVENT_OBJECT_HIDE = 0x8003;
+    public const uint EVENT_OBJECT_REORDER = 0x8004;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const int OBJID_WINDOW = 0;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
     public const uint ULW_ALPHA = 0x00000002;
     public const byte AC_SRC_OVER = 0x00;
@@ -47,6 +64,13 @@ internal static class NativeMethods
     public const int WM_LBUTTONUP = 0x0202;
     public const int WM_CONTEXTMENU = 0x007B;
     public const int WM_DESTROY = 0x0002;
+    public const int WM_HOTKEY = 0x0312;
+
+    public const int MOD_ALT = 0x0001;
+    public const int MOD_CONTROL = 0x0002;
+    public const int MOD_SHIFT = 0x0004;
+    public const int MOD_WIN = 0x0008;
+    public const int MOD_NOREPEAT = 0x4000;
     public const int HTCLIENT = 1;
     public const int HTTRANSPARENT = -1;
 
@@ -161,6 +185,40 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    public delegate void WinEventProc(
+        IntPtr hWinEventHook,
+        uint eventType,
+        IntPtr hwnd,
+        int idObject,
+        int idChild,
+        uint dwEventThread,
+        uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr hmodWinEventProc,
+        WinEventProc lpfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint dwFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
@@ -283,4 +341,10 @@ internal static class NativeMethods
 
     public const uint PDH_FMT_DOUBLE = 0x00000200;
     public const uint PDH_MORE_DATA = 0x800007D2;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 }

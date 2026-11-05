@@ -7,7 +7,7 @@ internal static class Program
     private static Mutex? _mutex;
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         _mutex = new Mutex(true, @"Local\TaskbarLiveStats.SingleInstance", out bool created);
         if (!created)
@@ -17,10 +17,28 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        AntdUI.Config.IsDark = true;
+
         // Prefer Segoe UI / system fonts for GDI+
         SetProcessDpiAwarenessContext(-4); // PER_MONITOR_AWARE_V2
 
-        Application.Run(new TrayAppContext());
+        if (args.Any(a => string.Equals(a, "--self-test", StringComparison.OrdinalIgnoreCase)))
+        {
+            int code = UI.SettingsSelfTest.Run();
+            Environment.ExitCode = code;
+            _mutex.ReleaseMutex();
+            _mutex.Dispose();
+            return;
+        }
+
+        if (args.Any(a => string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase)))
+        {
+            Application.Run(new TrayAppContext(openSettingsOnStart: true));
+        }
+        else
+        {
+            Application.Run(new TrayAppContext());
+        }
 
         _mutex.ReleaseMutex();
         _mutex.Dispose();
