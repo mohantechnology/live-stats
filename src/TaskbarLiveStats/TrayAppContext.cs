@@ -187,44 +187,59 @@ internal sealed class TrayAppContext : ApplicationContext
         }
     }
 
+    private bool SettingsOpen => _settingsForm is { IsDisposed: false };
+
+    private void ShowOverlay()
+    {
+        _window.SetUserSuppressed(false);
+        _window.SetVisible(true);
+        if (_settings.PlacementMode == PlacementMode.Taskbar && _watcher.Current.TrayHwnd != IntPtr.Zero)
+            _window.ApplyTaskbar(_watcher.Current);
+        _metrics.Resume();
+    }
+
+    private void HideOverlay()
+    {
+        _window.SetUserSuppressed(true);
+        _metrics.Pause();
+    }
+
+    /// <summary>Show the bar so a settings change can be seen. Clears a previous shortcut hide.</summary>
+    private void RevealOverlay()
+    {
+        _userHidden = false;
+        ShowOverlay();
+    }
+
     private void ToggleOverlayVisibility()
     {
         _userHidden = !_userHidden;
         if (_userHidden)
-        {
-            _window.SetUserSuppressed(true);
-            _metrics.Pause();
-            return;
-        }
-
-        _window.SetUserSuppressed(false);
-        if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
-        {
-            _window.SetVisible(true);
-            if (_settings.PlacementMode == PlacementMode.Taskbar)
-                _window.ApplyTaskbar(_watcher.Current);
-            _metrics.Resume();
-        }
+            HideOverlay();
+        else
+            ShowOverlay();
     }
 
     private void OpenSettings()
     {
-        if (_settingsForm is { IsDisposed: false })
+        if (SettingsOpen)
         {
-            _settingsForm.BringToFront();
+            RevealOverlay();
+            _settingsForm!.BringToFront();
             _settingsForm.Activate();
             return;
         }
 
         _settingsForm = new SettingsForm(_settings, ApplySettings);
         _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+
+        RevealOverlay();
         _settingsForm.Show();
         _settingsForm.Activate();
     }
 
     private void ApplySettings(AppSettings settings)
     {
-        bool wasFloating = _settings.PlacementMode == PlacementMode.Floating;
         _settings = settings.Clone();
 
         StartupHelper.SetEnabled(_settings.StartWithWindows);
@@ -238,30 +253,15 @@ internal sealed class TrayAppContext : ApplicationContext
         _window.WritePositionTo(_settings);
         Persist();
 
-        if (_userHidden)
-            return;
-
-        if (_settings.PlacementMode == PlacementMode.Floating)
+        // Apply and OK bring the bar back so the change is visible.
+        _userHidden = false;
+        if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
+            ShowOverlay();
+        else
         {
-            _window.SetVisible(true);
-            _metrics.Resume();
-        }
-        else if (!wasFloating && _watcher.Current.IsVisible)
-        {
-            _window.ApplyTaskbar(_watcher.Current);
-        }
-        else if (_settings.PlacementMode == PlacementMode.Taskbar)
-        {
-            _window.SetVisible(_watcher.Current.IsVisible);
-            if (_watcher.Current.IsVisible)
-            {
-                _window.ApplyTaskbar(_watcher.Current);
-                _metrics.Resume();
-            }
-            else
-            {
-                _metrics.Pause();
-            }
+            _window.SetUserSuppressed(false);
+            _window.SetVisible(false);
+            _metrics.Pause();
         }
     }
 

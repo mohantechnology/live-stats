@@ -6,6 +6,8 @@ using TaskbarLiveStats.Settings;
 
 namespace TaskbarLiveStats.UI;
 
+internal readonly record struct OverlayHit(Rectangle Bounds, string Title);
+
 internal sealed class StatsRenderer : IDisposable
 {
     private const int PadX = 10;
@@ -25,13 +27,28 @@ internal sealed class StatsRenderer : IDisposable
     private OverlayDensity _density = OverlayDensity.Default;
     private float _valueFontPt = 12f;
     private float _labelFontPt = 8f;
+    private float _detailFontPt = 7.5f;
     private const int DetailColGap = 12;
-    private const int DetailRowGap = 1;
+    private const int DetailRowGapHorizontal = 1;
+    private const int DetailRowGapVertical = 3;
     private const int DetailNameGap = 8;
     private const int DetailBlockGap = 10;
 
     private MetricPalette _colors = new();
+    private UsageColorBands _bands = new();
     private DetailAnchor _detailAnchor = DetailAnchor.Center;
+    private readonly List<OverlayHit> _hits = new();
+
+    public string? TitleAt(Point point)
+    {
+        for (int i = _hits.Count - 1; i >= 0; i--)
+        {
+            if (_hits[i].Bounds.Contains(point))
+                return _hits[i].Title;
+        }
+
+        return null;
+    }
 
     public OverlayOrientation Orientation
     {
@@ -57,6 +74,15 @@ internal sealed class StatsRenderer : IDisposable
         set => _labelFontPt = Math.Clamp(value, 6f, 18f);
     }
 
+    public float DetailFontPt
+    {
+        get => _detailFontPt;
+        set => _detailFontPt = Math.Clamp(value, 6f, 18f);
+    }
+
+    private int DetailRowGap =>
+        _orientation == OverlayOrientation.Vertical ? DetailRowGapVertical : DetailRowGapHorizontal;
+
     public void ResetSizeLock()
     {
         // Size is recomputed every measure from fonts/density; no growth lock.
@@ -68,7 +94,10 @@ internal sealed class StatsRenderer : IDisposable
         Density = settings.Density;
         ValueFontPt = settings.ActiveValueFontPt;
         LabelFontPt = settings.ActiveLabelFontPt;
+        DetailFontPt = settings.ActiveDetailFontPt;
         _colors = (settings.Colors ?? new MetricPalette()).Clone();
+        _bands = (settings.UsageColors ?? new UsageColorBands()).Clone();
+        _bands.Normalize();
     }
 
     public DetailAnchor DetailAnchor
@@ -81,24 +110,27 @@ internal sealed class StatsRenderer : IDisposable
     {
         using var valueFont = CreateValueFont();
         using var labelFont = CreateLabelFont();
+        using var detailFont = CreateDetailFont();
         using var iconFont = CreateIconFont();
         using var tmp = new Bitmap(1, 1);
         using var g = Graphics.FromImage(tmp);
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-        return MeasureMain(g, frame.Main, preferredThickness, valueFont, labelFont, iconFont);
+        return MeasureMain(g, frame.Main, preferredThickness, valueFont, labelFont, detailFont, iconFont);
     }
 
     public void PaintGdi(Graphics g, OverlayFrame frame, int width, int height)
     {
+        _hits.Clear();
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
         using var valueFont = CreateValueFont();
         using var labelFont = CreateLabelFont();
+        using var detailFont = CreateDetailFont();
         using var iconFont = CreateIconFont();
-        PaintMain(g, frame.Main, new Rectangle(0, 0, width, height), valueFont, labelFont, iconFont);
+        PaintMain(g, frame.Main, new Rectangle(0, 0, width, height), valueFont, labelFont, detailFont, iconFont);
     }
 
     public bool PaintLayered(
@@ -121,7 +153,7 @@ internal sealed class StatsRenderer : IDisposable
         return UpdateLayered(_bitmap!, hwnd, width, height, screenX, screenY, asChild, alpha);
     }
 
-    private Size MeasureMain(Graphics g, MetricBlock[] blocks, int preferredThickness, Font valueFont, Font labelFont, Font iconFont)
+    private Size MeasureMain(Graphics g, MetricBlock[] blocks, int preferredThickness, Font valueFont, Font labelFont, Font detailFont, Font iconFont)
     {
         int thickness = Math.Max(28, preferredThickness);
         bool compact = _density == OverlayDensity.Compact;
@@ -133,7 +165,7 @@ internal sealed class StatsRenderer : IDisposable
             float maxBlockH = 0;
             foreach (var block in blocks)
             {
-                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
                 total += sz.Width + gap;
                 maxBlockH = Math.Max(maxBlockH, sz.Height);
             }
@@ -161,20 +193,25 @@ internal sealed class StatsRenderer : IDisposable
         }
 
         float maxW = 0;
-        float blockH = 0;
+        float totalH = PadY;
+        int counted = 0;
         foreach (var block in blocks)
         {
-            var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+            var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
             maxW = Math.Max(maxW, sz.Width);
-            blockH = Math.Max(blockH, sz.Height);
+            if (counted > 0)
+                totalH += gap;
+            totalH += sz.Height;
+            counted++;
         }
 
+        totalH += PadY;
         int width = Math.Max(100, (int)Math.Ceiling(maxW + PadX * 2));
-        int height = Math.Max(60, (int)Math.Ceiling(PadY * 2 + blocks.Length * blockH + Math.Max(0, blocks.Length - 1) * gap));
+        int height = Math.Max(60, (int)Math.Ceiling(totalH));
         return new Size(width, height);
     }
 
-    private void PaintMain(Graphics g, MetricBlock[] blocks, Rectangle band, Font valueFont, Font labelFont, Font iconFont)
+    private void PaintMain(Graphics g, MetricBlock[] blocks, Rectangle band, Font valueFont, Font labelFont, Font detailFont, Font iconFont)
     {
         bool compact = _density == OverlayDensity.Compact;
         int gap = compact ? BlockGapCompact : BlockGapDefault;
@@ -184,14 +221,17 @@ internal sealed class StatsRenderer : IDisposable
             float x = PadX;
             foreach (var block in blocks)
             {
-                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
-                float y = _detailAnchor switch
-                {
-                    DetailAnchor.Bottom => band.Bottom - sz.Height - 2,
-                    DetailAnchor.Top => band.Top + 2,
-                    _ => band.Y + (band.Height - sz.Height) / 2f
-                };
-                DrawBlock(g, block, x, y, sz, valueFont, labelFont, iconFont, compact);
+                var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
+                // Busiest CPU/GPU blocks are centered in the bar. Other metrics stay on the taskbar edge.
+                float y = block.Details != null
+                    ? band.Y + (band.Height - sz.Height) / 2f
+                    : _detailAnchor switch
+                    {
+                        DetailAnchor.Bottom => band.Bottom - sz.Height - 2,
+                        DetailAnchor.Top => band.Top + 2,
+                        _ => band.Y + (band.Height - sz.Height) / 2f
+                    };
+                DrawBlock(g, block, x, y, sz, valueFont, labelFont, detailFont, iconFont, compact);
                 x += sz.Width + gap;
             }
 
@@ -202,9 +242,9 @@ internal sealed class StatsRenderer : IDisposable
         float colW = Math.Max(0, band.Width - PadX * 2);
         foreach (var block in blocks)
         {
-            var sz = MeasureBlockFixed(g, block, valueFont, labelFont, iconFont, compact);
+            var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
             var drawSize = new SizeF(Math.Max(sz.Width, colW), sz.Height);
-            DrawBlock(g, block, PadX, yStack, drawSize, valueFont, labelFont, iconFont, compact);
+            DrawBlock(g, block, PadX, yStack, drawSize, valueFont, labelFont, detailFont, iconFont, compact);
             yStack += sz.Height + gap;
         }
     }
@@ -219,17 +259,18 @@ internal sealed class StatsRenderer : IDisposable
         int Width,
         int Height);
 
-    private static GridMetrics MeasureGrid(Graphics g, DetailGroup group, Font font)
+    private GridMetrics MeasureGrid(Graphics g, DetailGroup group, Font font)
     {
         int nameW = TextWidth(g, string.IsNullOrEmpty(group.ReserveName) ? "P99" : group.ReserveName, font);
         int pctW = TextWidth(g, string.IsNullOrEmpty(group.ReservePercent) ? "100%" : group.ReservePercent, font);
         int cellW = nameW + DetailNameGap + pctW;
-        int cellH = (int)Math.Ceiling(font.GetHeight(g));
+        int cellH = (int)Math.Ceiling(font.GetHeight(96f));
         int slots = Math.Max(1, group.Slots);
         int cols = Math.Min(2, slots);
         int rows = (slots + cols - 1) / cols;
+        int rowGap = DetailRowGap;
         int width = cellW * cols + Math.Max(0, cols - 1) * DetailColGap;
-        int height = rows * cellH + Math.Max(0, rows - 1) * DetailRowGap;
+        int height = rows * cellH + Math.Max(0, rows - 1) * rowGap;
         return new GridMetrics(nameW, pctW, cellW, cellH, cols, rows, width, height);
     }
 
@@ -242,9 +283,6 @@ internal sealed class StatsRenderer : IDisposable
     private void DrawGrid(Graphics g, MetricKind kind, DetailGroup group, float x, float y, Font font)
     {
         GridMetrics grid = MeasureGrid(g, group, font);
-        Color accent = Accent(kind);
-        using var nameBrush = new SolidBrush(Blend(accent, ThemeHelper.DimColor, 0.35f));
-        using var valueBrush = new SolidBrush(accent);
         using var nameFormat = new StringFormat(StringFormat.GenericTypographic)
         {
             Alignment = StringAlignment.Near,
@@ -272,8 +310,12 @@ internal sealed class StatsRenderer : IDisposable
                 float cy = y + row * (grid.CellHeight + DetailRowGap);
                 var nameRect = new RectangleF(cx, cy, grid.NameWidth, grid.CellHeight);
                 var pctRect = new RectangleF(cx + grid.NameWidth + DetailNameGap, cy, grid.PercentWidth, grid.CellHeight);
+                Color accent = Accent(kind, cell.LoadPercent);
+                using var nameBrush = new SolidBrush(Blend(accent, ThemeHelper.DimColor, 0.35f));
+                using var valueBrush = new SolidBrush(accent);
                 g.DrawString(cell.Name, font, nameBrush, nameRect, nameFormat);
                 g.DrawString(cell.Percent, font, valueBrush, pctRect, valueFormat);
+                AddHit(new RectangleF(cx, cy, grid.CellWidth, grid.CellHeight), CellTitle(cell));
             }
         }
     }
@@ -297,12 +339,12 @@ internal sealed class StatsRenderer : IDisposable
             g.MeasureString(block.Label, labelFont).Width,
             g.MeasureString(reserveLabel, labelFont).Width);
         float textW = Math.Max(valueW, labelW);
-        float textH = valueFont.GetHeight(g) + labelFont.GetHeight(g) - 2;
+        float textH = valueFont.GetHeight(96f) + labelFont.GetHeight(96f) - 2;
 
         if (compact)
             return new MainMetrics(textW + AccentGutter, textH, textW);
 
-        float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
+        float iconSide = Math.Max(IconBox, iconFont.GetHeight(96f) + 4);
         float h = Math.Max(iconSide, textH);
         float w = AccentGutter + iconSide + IconTextGap + textW;
         return new MainMetrics(w, h, textW);
@@ -313,6 +355,7 @@ internal sealed class StatsRenderer : IDisposable
         MetricBlock block,
         Font valueFont,
         Font labelFont,
+        Font detailFont,
         Font iconFont,
         bool compact)
     {
@@ -320,13 +363,8 @@ internal sealed class StatsRenderer : IDisposable
         if (block.Details == null)
             return new SizeF(main.Width, main.Height);
 
-        GridMetrics grid = MeasureGrid(g, block.Details, labelFont);
-        bool hangDown = _detailAnchor == DetailAnchor.Top
-            && _orientation == OverlayOrientation.Horizontal;
-        float labelH = labelFont.GetHeight(g);
-        float h = hangDown
-            ? main.Height + Math.Max(0, grid.Height - labelH)
-            : Math.Max(main.Height, grid.Height);
+        GridMetrics grid = MeasureGrid(g, block.Details, detailFont);
+        float h = Math.Max(main.Height, grid.Height);
         return new SizeF(main.Width + DetailBlockGap + grid.Width, h);
     }
 
@@ -338,15 +376,18 @@ internal sealed class StatsRenderer : IDisposable
         SizeF size,
         Font valueFont,
         Font labelFont,
+        Font detailFont,
         Font iconFont,
         bool compact)
     {
         MainMetrics main = MeasureMainPart(g, block, valueFont, labelFont, iconFont, compact);
-        bool hangDown = _detailAnchor == DetailAnchor.Top
-            && _orientation == OverlayOrientation.Horizontal;
-        float mainTop = hangDown ? y : y + size.Height - main.Height;
+        // With a busiest list, keep the icon and value in the middle of the block
+        // instead of sinking them to the bottom beside the last row.
+        float mainTop = block.Details != null
+            ? y + (size.Height - main.Height) / 2f
+            : y;
 
-        Color accent = Accent(block.Kind);
+        Color accent = Accent(block.Kind, block.LoadPercent);
         Color labelColor = Blend(accent, ThemeHelper.DimColor, 0.22f);
         using var accentBrush = new SolidBrush(accent);
         using var labelBrush = new SolidBrush(labelColor);
@@ -362,7 +403,7 @@ internal sealed class StatsRenderer : IDisposable
 
         if (!compact)
         {
-            float iconSide = Math.Max(IconBox, iconFont.GetHeight(g) + 4);
+            float iconSide = Math.Max(IconBox, iconFont.GetHeight(96f) + 4);
             float iconY = mainTop + (main.Height - iconSide) / 2f;
             var iconRect = new RectangleF(textX, iconY, iconSide, iconSide);
             using (var path = RoundedRect(iconRect, 3))
@@ -379,8 +420,8 @@ internal sealed class StatsRenderer : IDisposable
             textX += iconSide + IconTextGap;
         }
 
-        float valueH = valueFont.GetHeight(g);
-        float labelH = labelFont.GetHeight(g);
+        float valueH = valueFont.GetHeight(96f);
+        float labelH = labelFont.GetHeight(96f);
         float stackH = valueH + labelH - 2;
         float textY = mainTop + (main.Height - stackH) / 2f;
 
@@ -392,23 +433,46 @@ internal sealed class StatsRenderer : IDisposable
             Trimming = StringTrimming.EllipsisCharacter
         };
 
+        var labelRect = new RectangleF(textX, textY + valueH - 2, textW, labelH + 2);
         g.DrawString(block.Value, valueFont, accentBrush, new RectangleF(textX, textY, textW, valueH + 2), near);
-        g.DrawString(block.Label, labelFont, labelBrush, new RectangleF(textX, textY + valueH - 2, textW, labelH + 2), near);
+        g.DrawString(block.Label, labelFont, labelBrush, labelRect, near);
+        AddHit(new RectangleF(x, y, size.Width, size.Height), BlockTitle(block));
 
         if (block.Details == null)
             return;
 
-        GridMetrics grid = MeasureGrid(g, block.Details, labelFont);
+        GridMetrics grid = MeasureGrid(g, block.Details, detailFont);
         float gridX = textX + textW + DetailBlockGap;
-        float gridY = hangDown
-            ? textY + valueH - 2
-            : mainTop + main.Height - grid.Height;
-        DrawGrid(g, block.Kind, block.Details, gridX, gridY, labelFont);
+        float gridY = mainTop + (main.Height - grid.Height) / 2f;
+        DrawGrid(g, block.Kind, block.Details, gridX, gridY, detailFont);
     }
 
-    private Color Accent(MetricKind kind)
+    private static string BlockTitle(MetricBlock block)
+    {
+        if (string.IsNullOrEmpty(block.Value) || block.Label.Contains(block.Value, StringComparison.Ordinal))
+            return block.Label;
+        return block.Label + "  " + block.Value;
+    }
+
+    private static string CellTitle(DetailCell cell)
+    {
+        if (string.IsNullOrEmpty(cell.Percent))
+            return cell.Name;
+        return cell.Name + "  " + cell.Percent;
+    }
+
+    private void AddHit(RectangleF bounds, string title)
+    {
+        if (string.IsNullOrWhiteSpace(title) || bounds.Width < 1f || bounds.Height < 1f)
+            return;
+        _hits.Add(new OverlayHit(Rectangle.Round(bounds), title));
+    }
+
+    internal Color Accent(MetricKind kind, double? loadPercent = null)
     {
         Color color = MetricColors.Resolve(_colors, kind);
+        if (loadPercent is double pct)
+            color = _bands.ColorFor(pct, color);
         if (ThemeHelper.IsDarkTaskbar())
             return color;
 
@@ -456,6 +520,9 @@ internal sealed class StatsRenderer : IDisposable
 
     private Font CreateLabelFont() =>
         new("Segoe UI", _labelFontPt, FontStyle.Regular, GraphicsUnit.Point);
+
+    private Font CreateDetailFont() =>
+        new("Segoe UI", _detailFontPt, FontStyle.Regular, GraphicsUnit.Point);
 
     private static Font CreateIconFont()
     {

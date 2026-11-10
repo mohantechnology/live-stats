@@ -9,10 +9,6 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        _mutex = new Mutex(true, @"Local\TaskbarLiveStats.SingleInstance", out bool created);
-        if (!created)
-            return;
-
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -24,12 +20,13 @@ internal static class Program
 
         if (args.Any(a => string.Equals(a, "--self-test", StringComparison.OrdinalIgnoreCase)))
         {
-            int code = UI.SettingsSelfTest.Run();
-            Environment.ExitCode = code;
-            _mutex.ReleaseMutex();
-            _mutex.Dispose();
+            Environment.ExitCode = UI.SettingsSelfTest.Run();
             return;
         }
+
+        _mutex = new Mutex(true, @"Local\TaskbarLiveStats.SingleInstance", out bool created);
+        if (!created)
+            return;
 
         if (args.Any(a => string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase)))
         {

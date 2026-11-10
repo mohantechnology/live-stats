@@ -207,6 +207,114 @@ internal sealed class MetricPalette
     }
 }
 
+/// <summary>
+/// Shared usage bands. Below the idle mark each metric keeps its own color.
+/// Through the high mark uses <see cref="Normal"/>. Above that uses <see cref="High"/>.
+/// </summary>
+internal sealed class UsageColorBands
+{
+    public const string DefaultNormal = "#66BB6A";
+    public const string DefaultHigh = "#EF5350";
+    public const int DefaultIdleBelow = 10;
+    public const int DefaultHighAbove = 70;
+
+    public int IdleBelowPercent { get; set; } = DefaultIdleBelow;
+    public int HighAbovePercent { get; set; } = DefaultHighAbove;
+    public string Normal { get; set; } = DefaultNormal;
+    public string High { get; set; } = DefaultHigh;
+
+    public UsageColorBands Clone() => new()
+    {
+        IdleBelowPercent = IdleBelowPercent,
+        HighAbovePercent = HighAbovePercent,
+        Normal = Normal,
+        High = High
+    };
+
+    public void Normalize()
+    {
+        IdleBelowPercent = Math.Clamp(IdleBelowPercent, 0, 99);
+        HighAbovePercent = Math.Clamp(HighAbovePercent, 1, 100);
+        if (IdleBelowPercent >= HighAbovePercent)
+            IdleBelowPercent = HighAbovePercent - 1;
+
+        Normal = MetricPalette.ToHex(MetricPalette.Parse(Normal, DefaultNormal));
+        High = MetricPalette.ToHex(MetricPalette.Parse(High, DefaultHigh));
+    }
+
+    public Color ColorFor(double percent, Color idle)
+    {
+        if (double.IsNaN(percent) || percent < IdleBelowPercent)
+            return idle;
+        if (percent <= HighAbovePercent)
+            return MetricPalette.Parse(Normal, DefaultNormal);
+        return MetricPalette.Parse(High, DefaultHigh);
+    }
+}
+
+/// <summary>Optional bytes/sec ceilings for speeds that have no natural 100%.</summary>
+internal sealed class RateCeilings
+{
+    public double NetSendBytesPerSec { get; set; }
+    public double NetRecvBytesPerSec { get; set; }
+    public double DiskReadBytesPerSec { get; set; }
+    public double DiskWriteBytesPerSec { get; set; }
+
+    public RateCeilings Clone() => new()
+    {
+        NetSendBytesPerSec = NetSendBytesPerSec,
+        NetRecvBytesPerSec = NetRecvBytesPerSec,
+        DiskReadBytesPerSec = DiskReadBytesPerSec,
+        DiskWriteBytesPerSec = DiskWriteBytesPerSec
+    };
+
+    public void Normalize()
+    {
+        NetSendBytesPerSec = Clean(NetSendBytesPerSec);
+        NetRecvBytesPerSec = Clean(NetRecvBytesPerSec);
+        DiskReadBytesPerSec = Clean(DiskReadBytesPerSec);
+        DiskWriteBytesPerSec = Clean(DiskWriteBytesPerSec);
+    }
+
+    /// <summary>Null when the ceiling is off, so the metric keeps its own color.</summary>
+    public static double? LoadPercent(double bytesPerSec, double ceilingBytesPerSec)
+    {
+        if (double.IsNaN(ceilingBytesPerSec) || ceilingBytesPerSec <= 0)
+            return null;
+        if (double.IsNaN(bytesPerSec) || bytesPerSec <= 0)
+            return 0;
+        return 100.0 * bytesPerSec / ceilingBytesPerSec;
+    }
+
+    public static double ToDisplay(double bytesPerSec, RateUnit unit)
+    {
+        if (double.IsNaN(bytesPerSec) || bytesPerSec <= 0)
+            return 0;
+        return unit == RateUnit.Bits
+            ? bytesPerSec * 8.0 / 1_000_000.0
+            : bytesPerSec / (1024.0 * 1024.0);
+    }
+
+    public static double FromDisplay(double display, RateUnit unit)
+    {
+        if (double.IsNaN(display) || display <= 0)
+            return 0;
+        return unit == RateUnit.Bits
+            ? display * 1_000_000.0 / 8.0
+            : display * 1024.0 * 1024.0;
+    }
+
+    public static string UnitLabel(RateUnit unit) =>
+        unit == RateUnit.Bits ? "Mbps" : "MB/s";
+
+    private static double Clean(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
+            return 0;
+        return value;
+    }
+}
+
 internal sealed class AppSettings
 {
     public bool StartWithWindows { get; set; } = true;
@@ -232,9 +340,16 @@ internal sealed class AppSettings
     public float CompactValueFontPt { get; set; } = 10f;
     /// <summary>Label font size (pt) when Density is Compact.</summary>
     public float CompactLabelFontPt { get; set; } = 7.5f;
+    /// <summary>Busiest-item font size (pt) when Density is Default.</summary>
+    public float DefaultDetailFontPt { get; set; } = 7.5f;
+    /// <summary>Busiest-item font size (pt) when Density is Compact.</summary>
+    public float CompactDetailFontPt { get; set; } = 7f;
 
     /// <summary>Metrics sample interval in milliseconds (100–10000).</summary>
     public int UpdateIntervalMs { get; set; } = 1000;
+
+    /// <summary>Upper bound for <see cref="UsageDetailCount"/>. The bar still lists only cores and engines that exist.</summary>
+    public const int MaxUsageDetailCount = 50;
 
     /// <summary>How many busiest logical processors and GPU engines to list.</summary>
     public int UsageDetailCount { get; set; } = 3;
@@ -255,6 +370,11 @@ internal sealed class AppSettings
 
     public MetricPalette Colors { get; set; } = new();
 
+    public UsageColorBands UsageColors { get; set; } = new();
+
+    /// <summary>Bytes per second. Zero keeps that speed on its own color.</summary>
+    public RateCeilings RateCeilings { get; set; } = new();
+
     public static AppSettings CreateDefaults() => new();
 
     public float ActiveValueFontPt =>
@@ -262,6 +382,9 @@ internal sealed class AppSettings
 
     public float ActiveLabelFontPt =>
         Density == OverlayDensity.Compact ? CompactLabelFontPt : DefaultLabelFontPt;
+
+    public float ActiveDetailFontPt =>
+        Density == OverlayDensity.Compact ? CompactDetailFontPt : DefaultDetailFontPt;
 
     public AppSettings Clone() => new()
     {
@@ -282,15 +405,19 @@ internal sealed class AppSettings
         DefaultLabelFontPt = DefaultLabelFontPt,
         CompactValueFontPt = CompactValueFontPt,
         CompactLabelFontPt = CompactLabelFontPt,
+        DefaultDetailFontPt = DefaultDetailFontPt,
+        CompactDetailFontPt = CompactDetailFontPt,
         UpdateIntervalMs = Math.Clamp(UpdateIntervalMs, 100, 10_000),
-        UsageDetailCount = Math.Clamp(UsageDetailCount <= 0 ? 3 : UsageDetailCount, 1, 8),
+        UsageDetailCount = Math.Clamp(UsageDetailCount <= 0 ? 3 : UsageDetailCount, 1, MaxUsageDetailCount),
         ShowUsageDetails = ShowUsageDetails,
         HideIdleMetrics = HideIdleMetrics,
         HideWhenIdle = (HideWhenIdle ?? new IdleHideToggles()).Clone(),
         HotkeyEnabled = HotkeyEnabled,
         HotkeyModifiers = HotkeyModifiers,
         HotkeyVirtualKey = HotkeyVirtualKey,
-        Colors = (Colors ?? new MetricPalette()).Clone()
+        Colors = (Colors ?? new MetricPalette()).Clone(),
+        UsageColors = (UsageColors ?? new UsageColorBands()).Clone(),
+        RateCeilings = (RateCeilings ?? new RateCeilings()).Clone()
     };
 }
 

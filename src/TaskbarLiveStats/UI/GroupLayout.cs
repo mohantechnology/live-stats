@@ -19,12 +19,14 @@ internal enum MetricKind
 }
 
 /// <summary>One usage block: icon + large value + small label, with an optional grid beside the label.</summary>
+/// <param name="LoadPercent">Null keeps the metric color. Otherwise 0–100+ for the usage bands.</param>
 internal readonly record struct MetricBlock(
     MetricKind Kind,
     string IconGlyph,
     string Value,
     string Label,
-    DetailGroup? Details = null);
+    DetailGroup? Details = null,
+    double? LoadPercent = null);
 
 /// <summary>Where a taller block sits in the taskbar slot. Extra rows grow away from the screen edge.</summary>
 internal enum DetailAnchor
@@ -35,7 +37,7 @@ internal enum DetailAnchor
 }
 
 /// <summary>One fixed cell: name on the left, percent on the right.</summary>
-internal readonly record struct DetailCell(string Name, string Percent);
+internal readonly record struct DetailCell(string Name, string Percent, double LoadPercent);
 
 /// <summary>Busiest-item grid drawn beside its parent label. Slots keep the size stable.</summary>
 internal sealed class DetailGroup
@@ -82,44 +84,56 @@ internal static class GroupLayout
         var list = new List<MetricBlock>(10);
         bool useBits = settings.RateUnit == RateUnit.Bits;
 
+        var ceilings = settings.RateCeilings ?? new RateCeilings();
+
         bool showCpu = Keep(MetricKind.Cpu, m.Cpu, s.CpuPercent <= 0, hide.Cpu, idleWatches, advanceIdleWatch);
         if (showCpu)
         {
+            int cpuShown = UpperPercent(s.CpuPercent);
             list.Add(new MetricBlock(
                 MetricKind.Cpu,
                 IconCpu,
-                $"{UpperPercent(s.CpuPercent)}%",
+                $"{cpuShown}%",
                 "CPU",
-                settings.ShowUsageDetails ? CoreGroup(s, settings) : null));
+                settings.ShowUsageDetails ? CoreGroup(s, settings) : null,
+                cpuShown));
         }
 
         if (Keep(MetricKind.Memory, m.Memory, s.MemoryUsedBytes == 0, hide.Memory, idleWatches, advanceIdleWatch))
         {
             string used = FormatGiBNumber(s.MemoryUsedBytes);
             string total = FormatGiBNumber(s.MemoryTotalBytes);
+            int memoryShown = UpperPercent(s.MemoryPercent);
             list.Add(new MetricBlock(
                 MetricKind.Memory,
                 IconMemory,
                 $"{used}/{total} GB",
-                $"Memory ({UpperPercent(s.MemoryPercent)}%)"));
+                $"Memory ({memoryShown}%)",
+                null,
+                memoryShown));
         }
 
         bool showGpu = Keep(MetricKind.Gpu, m.Gpu, s.GpuPercent <= 0, hide.Gpu, idleWatches, advanceIdleWatch);
         if (showGpu)
         {
+            int gpuShown = UpperPercent(s.GpuPercent);
             list.Add(new MetricBlock(
                 MetricKind.Gpu,
                 IconGpu,
-                $"{UpperPercent(s.GpuPercent)}%",
+                $"{gpuShown}%",
                 "GPU",
-                settings.ShowUsageDetails ? EngineGroup(s, settings) : null));
+                settings.ShowUsageDetails ? EngineGroup(s, settings) : null,
+                gpuShown));
         }
 
         if (Keep(MetricKind.Vram, m.Vram, s.VramUsedBytes == 0, hide.Vram, idleWatches, advanceIdleWatch))
             list.Add(MemoryBlock(MetricKind.Vram, IconVram, s.VramUsedBytes, s.VramTotalBytes, s.VramPercent, "VRAM"));
 
         if (s.NpuPresent && Keep(MetricKind.Npu, m.Npu, s.NpuPercent <= 0, hide.Npu, idleWatches, advanceIdleWatch))
-            list.Add(new MetricBlock(MetricKind.Npu, IconNpu, $"{UpperPercent(s.NpuPercent)}%", "NPU"));
+        {
+            int npuShown = UpperPercent(s.NpuPercent);
+            list.Add(new MetricBlock(MetricKind.Npu, IconNpu, $"{npuShown}%", "NPU", null, npuShown));
+        }
 
         if (s.NpuPresent && Keep(MetricKind.NpuMemory, m.NpuMemory, s.NpuMemoryUsedBytes == 0, hide.NpuMemory, idleWatches, advanceIdleWatch))
             list.Add(MemoryBlock(MetricKind.NpuMemory, IconVram, s.NpuMemoryUsedBytes, s.NpuMemoryTotalBytes, s.NpuMemoryPercent, "NPU mem"));
@@ -127,25 +141,33 @@ internal static class GroupLayout
         if (Keep(MetricKind.NetSend, m.NetSend, s.NetSendBytesPerSec < 1, hide.NetSend, idleWatches, advanceIdleWatch))
         {
             var (val, unit) = FormatRateParts(s.NetSendBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.NetSend, IconNetwork, $"{val} {unit}", "Upload"));
+            list.Add(new MetricBlock(
+                MetricKind.NetSend, IconNetwork, $"{val} {unit}", "Upload",
+                null, RateCeilings.LoadPercent(s.NetSendBytesPerSec, ceilings.NetSendBytesPerSec)));
         }
 
         if (Keep(MetricKind.NetRecv, m.NetRecv, s.NetRecvBytesPerSec < 1, hide.NetRecv, idleWatches, advanceIdleWatch))
         {
             var (val, unit) = FormatRateParts(s.NetRecvBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.NetRecv, IconNetwork, $"{val} {unit}", "Download"));
+            list.Add(new MetricBlock(
+                MetricKind.NetRecv, IconNetwork, $"{val} {unit}", "Download",
+                null, RateCeilings.LoadPercent(s.NetRecvBytesPerSec, ceilings.NetRecvBytesPerSec)));
         }
 
         if (Keep(MetricKind.DiskRead, m.DiskRead, s.DiskReadBytesPerSec < 1, hide.DiskRead, idleWatches, advanceIdleWatch))
         {
             var (val, unit) = FormatRateParts(s.DiskReadBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.DiskRead, IconDisk, $"{val} {unit}", "Disk read"));
+            list.Add(new MetricBlock(
+                MetricKind.DiskRead, IconDisk, $"{val} {unit}", "Disk read",
+                null, RateCeilings.LoadPercent(s.DiskReadBytesPerSec, ceilings.DiskReadBytesPerSec)));
         }
 
         if (Keep(MetricKind.DiskWrite, m.DiskWrite, s.DiskWriteBytesPerSec < 1, hide.DiskWrite, idleWatches, advanceIdleWatch))
         {
             var (val, unit) = FormatRateParts(s.DiskWriteBytesPerSec, useBits);
-            list.Add(new MetricBlock(MetricKind.DiskWrite, IconDisk, $"{val} {unit}", "Disk write"));
+            list.Add(new MetricBlock(
+                MetricKind.DiskWrite, IconDisk, $"{val} {unit}", "Disk write",
+                null, RateCeilings.LoadPercent(s.DiskWriteBytesPerSec, ceilings.DiskWriteBytesPerSec)));
         }
 
         if (list.Count == 0)
@@ -159,12 +181,15 @@ internal static class GroupLayout
     {
         string used = FormatGiBNumber(usedBytes);
         string total = totalBytes > 0 ? FormatGiBNumber(totalBytes) : "—";
-        string label = totalBytes > 0 ? $"{name} ({UpperPercent(percent)}%)" : name;
+        int shown = UpperPercent(percent);
+        string label = totalBytes > 0 ? $"{name} ({shown}%)" : name;
         return new MetricBlock(
             kind,
             icon,
             totalBytes > 0 ? $"{used}/{total} GB" : $"{used} GB",
-            label);
+            label,
+            null,
+            totalBytes > 0 ? shown : null);
     }
 
     /// <summary>
@@ -229,9 +254,11 @@ internal static class GroupLayout
         for (int i = 0; i < limit; i++)
         {
             CoreUsage core = s.BusiestCores[i];
+            int shown = Whole(core.Percent);
             cells[i] = new DetailCell(
                 CoreTopology.Label(core.LogicalIndex),
-                string.Create(CultureInfo.InvariantCulture, $"{Whole(core.Percent)}%"));
+                string.Create(CultureInfo.InvariantCulture, $"{shown}%"),
+                shown);
         }
 
         return new DetailGroup
@@ -239,7 +266,7 @@ internal static class GroupLayout
             ReserveName = CoreTopology.ReserveLabel,
             ReservePercent = "100%",
             Cells = cells,
-            Slots = n
+            Slots = cells.Length
         };
     }
 
@@ -254,9 +281,11 @@ internal static class GroupLayout
         for (int i = 0; i < limit; i++)
         {
             EngineUsage engine = s.BusiestEngines[i];
+            int shown = Whole(engine.Percent);
             cells[i] = new DetailCell(
                 engine.Name,
-                string.Create(CultureInfo.InvariantCulture, $"{Whole(engine.Percent)}%"));
+                string.Create(CultureInfo.InvariantCulture, $"{shown}%"),
+                shown);
         }
 
         return new DetailGroup
@@ -264,11 +293,12 @@ internal static class GroupLayout
             ReserveName = "Compute",
             ReservePercent = "100%",
             Cells = cells,
-            Slots = n
+            Slots = cells.Length
         };
     }
 
-    private static int DetailCount(AppSettings settings) => Math.Clamp(settings.UsageDetailCount, 1, 8);
+    private static int DetailCount(AppSettings settings) =>
+        Math.Clamp(settings.UsageDetailCount, 1, AppSettings.MaxUsageDetailCount);
 
     private static int Whole(double value)
     {

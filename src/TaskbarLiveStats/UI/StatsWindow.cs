@@ -31,6 +31,8 @@ internal sealed class StatsWindow : Form
     private Point _dragStartLocation;
     private int _dragStartOffsetX;
     private bool _suppressClick;
+    private TitleTip? _hoverTip;
+    private string? _hoverTitle;
 
     public bool IsEmbedded => _embedder.IsEmbedded;
 
@@ -42,6 +44,7 @@ internal sealed class StatsWindow : Form
 
     public StatsWindow()
     {
+        AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -64,6 +67,7 @@ internal sealed class StatsWindow : Form
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
         MouseClick += OnMouseClick;
+        MouseLeave += (_, _) => ClearHoverTip();
 
         // Keep the WinForms context menu above this WS_EX_TOPMOST overlay.
         ContextMenuStripChanged += (_, _) =>
@@ -123,7 +127,9 @@ internal sealed class StatsWindow : Form
             Math.Abs(_settings.DefaultValueFontPt - settings.DefaultValueFontPt) > 0.01f ||
             Math.Abs(_settings.DefaultLabelFontPt - settings.DefaultLabelFontPt) > 0.01f ||
             Math.Abs(_settings.CompactValueFontPt - settings.CompactValueFontPt) > 0.01f ||
-            Math.Abs(_settings.CompactLabelFontPt - settings.CompactLabelFontPt) > 0.01f;
+            Math.Abs(_settings.CompactLabelFontPt - settings.CompactLabelFontPt) > 0.01f ||
+            Math.Abs(_settings.DefaultDetailFontPt - settings.DefaultDetailFontPt) > 0.01f ||
+            Math.Abs(_settings.CompactDetailFontPt - settings.CompactDetailFontPt) > 0.01f;
         _settings = settings.Clone();
         if (hideIdleChanged)
             _idleWatches.Clear();
@@ -309,6 +315,7 @@ internal sealed class StatsWindow : Form
 
         if (!visible)
         {
+            ClearHoverTip();
             HideNative();
             return;
         }
@@ -568,6 +575,7 @@ internal sealed class StatsWindow : Form
             Invalidate();
             Update();
             _embedder.RaiseZOrder();
+            _hoverTip?.KeepOnTop();
             return;
         }
 
@@ -589,6 +597,7 @@ internal sealed class StatsWindow : Form
                 _embedder.RaiseZOrder();
             else
                 RaiseFloatingZOrder();
+            _hoverTip?.KeepOnTop();
         }
     }
 
@@ -619,7 +628,13 @@ internal sealed class StatsWindow : Form
 
     private void OnMouseMove(object? sender, MouseEventArgs e)
     {
-        if (!_dragging) return;
+        if (!_dragging)
+        {
+            UpdateHoverTip(e.Location);
+            return;
+        }
+
+        ClearHoverTip();
 
         var cur = Cursor.Position;
         int dx = cur.X - _dragStartCursor.X;
@@ -670,10 +685,45 @@ internal sealed class StatsWindow : Form
     private void ClampToVirtualScreen()
     {
         var vs = SystemInformation.VirtualScreen;
-        int x = Math.Clamp(Left, vs.Left, vs.Right - Width);
-        int y = Math.Clamp(Top, vs.Top, vs.Bottom - Height);
+        // A long busiest list can be taller or wider than the desktop. Math.Clamp
+        // throws when the max is below the min, so pin that edge to the screen instead.
+        int x = FitOnScreen(Left, vs.Left, vs.Right - Width);
+        int y = FitOnScreen(Top, vs.Top, vs.Bottom - Height);
         if (x != Left || y != Top)
             SetBounds(x, y, Width, Height);
+    }
+
+    private static int FitOnScreen(int value, int min, int max)
+    {
+        if (max < min)
+            return min;
+        return Math.Clamp(value, min, max);
+    }
+
+    private void UpdateHoverTip(Point client)
+    {
+        string? title = _renderer.TitleAt(client);
+        if (string.Equals(title, _hoverTitle, StringComparison.Ordinal))
+            return;
+
+        _hoverTitle = title;
+        if (string.IsNullOrEmpty(title))
+        {
+            _hoverTip?.Hide();
+            return;
+        }
+
+        _hoverTip ??= new TitleTip();
+        _hoverTip.Present(title, PointToScreen(client));
+    }
+
+    private void ClearHoverTip()
+    {
+        if (_hoverTitle == null)
+            return;
+
+        _hoverTitle = null;
+        _hoverTip?.Hide();
     }
 
     private void OnMouseClick(object? sender, MouseEventArgs e)
@@ -720,10 +770,86 @@ internal sealed class StatsWindow : Form
     {
         if (disposing)
         {
+            _hoverTip?.Dispose();
             _embedder.Dispose();
             _renderer.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    /// <summary>Full label shown when the painted text is cut off. Stays above the topmost bar.</summary>
+    private sealed class TitleTip : Form
+    {
+        private readonly Label _text;
+        private readonly Font _font = new("Segoe UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
+
+        public TitleTip()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(28, 28, 32);
+            _text = new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(480, 0),
+                ForeColor = Color.FromArgb(245, 245, 245),
+                BackColor = Color.FromArgb(28, 28, 32),
+                Font = _font,
+                Location = new Point(8, 4)
+            };
+            Controls.Add(_text);
+        }
+
+        protected override bool ShowWithoutActivation => true;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_TOPMOST;
+                return cp;
+            }
+        }
+
+        public void Present(string title, Point screen)
+        {
+            _text.Text = title;
+            Size pref = _text.PreferredSize;
+            ClientSize = new Size(Math.Max(12, pref.Width) + 16, Math.Max(12, pref.Height) + 8);
+
+            var loc = new Point(screen.X + 16, screen.Y + 18);
+            Rectangle vs = SystemInformation.VirtualScreen;
+            if (loc.X + Width > vs.Right)
+                loc.X = Math.Max(vs.Left, screen.X - Width - 8);
+            if (loc.Y + Height > vs.Bottom)
+                loc.Y = Math.Max(vs.Top, screen.Y - Height - 8);
+            Location = loc;
+
+            if (!Visible)
+                Show();
+            KeepOnTop();
+        }
+
+        public void KeepOnTop()
+        {
+            if (!IsHandleCreated || !Visible)
+                return;
+
+            NativeMethods.SetWindowPos(
+                Handle,
+                NativeMethods.HWND_TOPMOST,
+                0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _font.Dispose();
+            base.Dispose(disposing);
+        }
     }
 }
