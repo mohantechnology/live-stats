@@ -102,9 +102,11 @@ internal static class SettingsSelfTest
         form.Location = new Point(60, 60);
         form.Show();
         Application.DoEvents();
+        AssertLayout(form, failures, "normal");
         AssertChrome(form, failures, "normal");
         form.WindowState = FormWindowState.Maximized;
         Application.DoEvents();
+        AssertLayout(form, failures, "maximized");
         AssertChrome(form, failures, "maximized");
         form.WindowState = FormWindowState.Normal;
         form.Hide();
@@ -268,7 +270,8 @@ internal static class SettingsSelfTest
         renderer.ApplyTypography(memOnly);
         var memSize = renderer.Measure(GroupLayout.FromSnapshot(fullSnap, memOnly), 40);
         int others = Math.Max(1, full.Main.Length - 1);
-        int limit = cpuSize.Height + others * (memSize.Height + 20) + 24;
+        int slack = Math.Max(36, memSize.Height / 3);
+        int limit = cpuSize.Height + others * (memSize.Height + slack) + 40;
         if (fullSize.Height > limit)
             failures.Add($"Vertical bar is {fullSize.Height}px, taller than the items need ({limit}).");
         if (fullSize.Height >= cpuSize.Height * others)
@@ -284,6 +287,136 @@ internal static class SettingsSelfTest
         var cpuBar = renderer.Measure(GroupLayout.FromSnapshot(fullSnap, cpuHorizontal), 48);
         if (Math.Abs(horizontal.Height - cpuBar.Height) > 4)
             failures.Add($"Horizontal bar height {horizontal.Height} should match the tallest block {cpuBar.Height}.");
+    }
+
+    private static void AssertLayout(SettingsForm form, List<string> failures, string state)
+    {
+        var rate = FindSegmented(form, "Bytes/s");
+        if (rate == null)
+            failures.Add($"Could not find the transfer unit control ({state}).");
+        else if (!PageHasTitle(rate, "General"))
+            failures.Add($"Transfer units should sit on General ({state}).");
+
+        var transfer = FindLabel(form, "Transfer units");
+        if (transfer == null || !PageHasTitle(transfer, "General"))
+            failures.Add($"Transfer units heading should sit on General ({state}).");
+
+        form.ShowSection("monitoring");
+        Application.DoEvents();
+
+        var ceilings = FindLabel(form, "Speed ceilings");
+        if (ceilings == null)
+            failures.Add($"Speed ceilings heading is missing ({state}).");
+        else
+        {
+            if (!PageHasTitle(ceilings, "Monitoring"))
+                failures.Add($"Speed ceilings should sit on Monitoring ({state}).");
+            if (CardHasLabel(ceilings, "Transfer units"))
+                failures.Add($"Speed ceilings card should not include Transfer units ({state}).");
+        }
+
+        var cpu = FindLabel(form, "CPU");
+        if (cpu?.Parent == null)
+        {
+            failures.Add($"Could not find the CPU metric row ({state}).");
+        }
+        else
+        {
+            var switches = new List<AntdUI.Switch>();
+            foreach (Control child in cpu.Parent.Controls)
+            {
+                if (child is AntdUI.Switch toggle)
+                    switches.Add(toggle);
+            }
+
+            if (switches.Count < 2)
+                failures.Add($"CPU row should have Hide and Show switches ({state}).");
+            else if (switches[0].Size != switches[1].Size)
+                failures.Add($"Hide and Show switches differ ({state}): {switches[0].Size} vs {switches[1].Size}.");
+
+            var startup = FindLabel(form, "Start with Windows");
+            AntdUI.Switch? shared = null;
+            if (startup?.Parent != null)
+            {
+                foreach (Control child in startup.Parent.Controls)
+                {
+                    if (child is AntdUI.Switch toggle)
+                        shared = toggle;
+                }
+            }
+
+            if (shared == null)
+                failures.Add($"Could not find the shared settings switch ({state}).");
+            else if (switches.Count >= 2 && (switches[0].Size != shared.Size || switches[1].Size != shared.Size))
+                failures.Add($"Metric switches should match the other settings switches ({state}): {switches[0].Size} vs {shared.Size}.");
+        }
+
+        AssertCaptionInside(FindLabel(form, "Hide when idle"), failures, state);
+        AssertCaptionInside(FindLabel(form, "Show"), failures, state);
+    }
+
+    private static void AssertCaptionInside(Label? caption, List<string> failures, string state)
+    {
+        if (caption?.Parent == null)
+        {
+            failures.Add($"Missing header caption ({state}).");
+            return;
+        }
+
+        Rectangle parent = caption.Parent.ClientRectangle;
+        Rectangle bounds = caption.Bounds;
+        if (bounds.Width < 8 || bounds.Left < 0 || bounds.Top < -1 || bounds.Right > parent.Right + 1 || bounds.Bottom > parent.Bottom + 1)
+            failures.Add($"{caption.Text} is outside its header ({state}). caption={bounds} header={parent}.");
+
+        int textW = TextRenderer.MeasureText(
+            caption.Text,
+            caption.Font,
+            new Size(int.MaxValue, int.MaxValue),
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+        if (caption.Width + 1 < textW)
+            failures.Add($"{caption.Text} is clipped ({state}): column {caption.Width}px, text {textW}px.");
+    }
+
+    private static bool PageHasTitle(Control control, string title)
+    {
+        Control? page = control;
+        while (page != null && page.Parent != null && page.Parent.Parent is not SettingsForm)
+            page = page.Parent;
+        if (page == null)
+            return false;
+
+        foreach (Control child in page.Controls)
+        {
+            if (child is Label label && string.Equals(label.Text, title, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool CardHasLabel(Control heading, string text)
+    {
+        if (heading.Parent == null)
+            return false;
+
+        foreach (Control child in heading.Parent.Controls)
+        {
+            if (child is Label label && string.Equals(label.Text, text, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static Label? FindLabel(Control root, string text)
+    {
+        foreach (Control c in Enumerate(root))
+        {
+            if (c is Label label && string.Equals(label.Text, text, StringComparison.Ordinal))
+                return label;
+        }
+
+        return null;
     }
 
     private static void AssertChrome(SettingsForm form, List<string> failures, string state)

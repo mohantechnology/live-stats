@@ -10,12 +10,6 @@ internal readonly record struct OverlayHit(Rectangle Bounds, string Title);
 
 internal sealed class StatsRenderer : IDisposable
 {
-    private const int PadX = 10;
-    private const int PadY = 6;
-    private const int BlockGapDefault = 14;
-    private const int BlockGapCompact = 10;
-    private const int IconTextGap = 6;
-    private const int IconBox = 18;
     private const float AccentW = 5f;
     private const float AccentGap = 6f;
     private const float AccentGutter = AccentW + AccentGap;
@@ -28,12 +22,20 @@ internal sealed class StatsRenderer : IDisposable
     private float _valueFontPt = 12f;
     private float _labelFontPt = 8f;
     private float _detailFontPt = 7.5f;
-    private const int DetailColGap = 12;
-    private const int DetailRowGapHorizontal = 1;
-    private const int DetailRowGapVertical = 3;
-    private const int DetailNameGap = 8;
-    private const int DetailBlockGap = 10;
+    private readonly record struct Rhythm(
+        int PadX,
+        int PadY,
+        int BlockGap,
+        int IconGap,
+        float IconSide,
+        int ValueLabelGap,
+        int DetailBlockGap,
+        int DetailNameGap,
+        int DetailColGap,
+        int DetailRowGap,
+        int NameCap);
 
+    private Rhythm _rhythm;
     private MetricPalette _colors = new();
     private UsageColorBands _bands = new();
     private DetailAnchor _detailAnchor = DetailAnchor.Center;
@@ -80,9 +82,6 @@ internal sealed class StatsRenderer : IDisposable
         set => _detailFontPt = Math.Clamp(value, 6f, 18f);
     }
 
-    private int DetailRowGap =>
-        _orientation == OverlayOrientation.Vertical ? DetailRowGapVertical : DetailRowGapHorizontal;
-
     public void ResetSizeLock()
     {
         // Size is recomputed every measure from fonts/density; no growth lock.
@@ -115,6 +114,7 @@ internal sealed class StatsRenderer : IDisposable
         using var tmp = new Bitmap(1, 1);
         using var g = Graphics.FromImage(tmp);
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        _rhythm = RhythmFor(g, valueFont, labelFont, detailFont);
 
         return MeasureMain(g, frame.Main, preferredThickness, valueFont, labelFont, detailFont, iconFont);
     }
@@ -122,7 +122,9 @@ internal sealed class StatsRenderer : IDisposable
     public void PaintGdi(Graphics g, OverlayFrame frame, int width, int height)
     {
         _hits.Clear();
-        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        // Grayscale antialiasing. ClearType fringes are clipped by the line box and
+        // turn into a cut through the glyph on a layered window.
+        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
@@ -130,6 +132,7 @@ internal sealed class StatsRenderer : IDisposable
         using var labelFont = CreateLabelFont();
         using var detailFont = CreateDetailFont();
         using var iconFont = CreateIconFont();
+        _rhythm = RhythmFor(g, valueFont, labelFont, detailFont);
         PaintMain(g, frame.Main, new Rectangle(0, 0, width, height), valueFont, labelFont, detailFont, iconFont);
     }
 
@@ -157,11 +160,13 @@ internal sealed class StatsRenderer : IDisposable
     {
         int thickness = Math.Max(28, preferredThickness);
         bool compact = _density == OverlayDensity.Compact;
-        int gap = compact ? BlockGapCompact : BlockGapDefault;
+        int gap = _rhythm.BlockGap;
+        int padX = _rhythm.PadX;
+        int padY = _rhythm.PadY;
 
         if (_orientation == OverlayOrientation.Horizontal)
         {
-            float total = PadX;
+            float total = padX;
             float maxBlockH = 0;
             foreach (var block in blocks)
             {
@@ -170,30 +175,18 @@ internal sealed class StatsRenderer : IDisposable
                 maxBlockH = Math.Max(maxBlockH, sz.Height);
             }
 
-            total += PadX - gap;
+            total += padX - gap;
             int w = Math.Max(100, (int)Math.Ceiling(total));
-            int contentH = (int)Math.Ceiling(maxBlockH + PadY * 2);
-            bool details = false;
-            foreach (var block in blocks)
-            {
-                if (block.Details != null)
-                {
-                    details = true;
-                    break;
-                }
-            }
-
-            // Busiest items may grow the row. With that section off, stay in the
-            // taskbar slot unless the chosen font itself no longer fits.
+            int contentH = (int)Math.Ceiling(maxBlockH + padY * 2);
+            // Never keep a slot that is shorter than the text. A few pixels short
+            // slices the bottom off the value and the label.
             int slot = compact ? 26 : thickness;
-            int h = details
-                ? Math.Max(slot, contentH)
-                : contentH > slot + 8 ? contentH : slot;
+            int h = Math.Max(slot, contentH);
             return new Size(w, h);
         }
 
         float maxW = 0;
-        float totalH = PadY;
+        float totalH = padY;
         int counted = 0;
         foreach (var block in blocks)
         {
@@ -205,8 +198,8 @@ internal sealed class StatsRenderer : IDisposable
             counted++;
         }
 
-        totalH += PadY;
-        int width = Math.Max(100, (int)Math.Ceiling(maxW + PadX * 2));
+        totalH += padY;
+        int width = Math.Max(100, (int)Math.Ceiling(maxW + padX * 2));
         int height = Math.Max(60, (int)Math.Ceiling(totalH));
         return new Size(width, height);
     }
@@ -214,16 +207,27 @@ internal sealed class StatsRenderer : IDisposable
     private void PaintMain(Graphics g, MetricBlock[] blocks, Rectangle band, Font valueFont, Font labelFont, Font detailFont, Font iconFont)
     {
         bool compact = _density == OverlayDensity.Compact;
-        int gap = compact ? BlockGapCompact : BlockGapDefault;
+        int gap = _rhythm.BlockGap;
+        int padX = _rhythm.PadX;
+        int padY = _rhythm.PadY;
+        bool expanded = false;
+        foreach (var block in blocks)
+        {
+            if (block.Details != null)
+            {
+                expanded = true;
+                break;
+            }
+        }
 
         if (_orientation == OverlayOrientation.Horizontal)
         {
-            float x = PadX;
+            float x = padX;
             foreach (var block in blocks)
             {
                 var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
-                // Busiest CPU/GPU blocks are centered in the bar. Other metrics stay on the taskbar edge.
-                float y = block.Details != null
+                // An open busiest list centers the whole row. Collapsed metrics share the taskbar edge.
+                float y = expanded
                     ? band.Y + (band.Height - sz.Height) / 2f
                     : _detailAnchor switch
                     {
@@ -238,13 +242,13 @@ internal sealed class StatsRenderer : IDisposable
             return;
         }
 
-        float yStack = band.Y + PadY;
-        float colW = Math.Max(0, band.Width - PadX * 2);
+        float yStack = band.Y + padY;
+        float colW = Math.Max(0, band.Width - padX * 2);
         foreach (var block in blocks)
         {
             var sz = MeasureBlockFixed(g, block, valueFont, labelFont, detailFont, iconFont, compact);
             var drawSize = new SizeF(Math.Max(sz.Width, colW), sz.Height);
-            DrawBlock(g, block, PadX, yStack, drawSize, valueFont, labelFont, detailFont, iconFont, compact);
+            DrawBlock(g, block, padX, yStack, drawSize, valueFont, labelFont, detailFont, iconFont, compact);
             yStack += sz.Height + gap;
         }
     }
@@ -259,43 +263,81 @@ internal sealed class StatsRenderer : IDisposable
         int Width,
         int Height);
 
+    private Rhythm RhythmFor(Graphics g, Font valueFont, Font labelFont, Font detailFont)
+    {
+        float valueH = valueFont.GetHeight(g);
+        float labelH = labelFont.GetHeight(g);
+        float detailH = detailFont.GetHeight(g);
+        bool compact = _density == OverlayDensity.Compact;
+        bool vertical = _orientation == OverlayOrientation.Vertical;
+        float scale = compact ? 0.82f : 1f;
+        int Px(float ems, float min) => Math.Max((int)Math.Round(min), (int)Math.Round(ems * scale));
+
+        // Gaps are fractions of the fonts actually in use, so a larger value or
+        // label opens the bar instead of packing the same pixels tighter.
+        return new Rhythm(
+            PadX: Px(valueH * 0.85f, 14),
+            PadY: Px(labelH * 0.85f, 10),
+            BlockGap: vertical ? Px(valueH * 1.2f, 22) : Px(valueH * 1.15f, 20),
+            IconGap: Px(labelH * 0.9f, 10),
+            IconSide: Math.Max(20f, valueH * 0.92f),
+            ValueLabelGap: Px(Math.Max(labelH * 0.45f, valueH * 0.22f), 6),
+            DetailBlockGap: Px(detailH * 1.85f, 20),
+            DetailNameGap: Px(detailH * 0.9f, 10),
+            DetailColGap: Px(detailH * 1.7f, 20),
+            DetailRowGap: Px(detailH * (vertical ? 0.55f : 0.28f), vertical ? 6 : 3),
+            NameCap: Math.Max(108, (int)Math.Round(detailH * 10.5f)));
+    }
+
+    private readonly record struct LineBox(float Width, float Height);
+
+    private static StringFormat TextFormat(StringAlignment align) => new(StringFormat.GenericTypographic)
+    {
+        Alignment = align,
+        LineAlignment = StringAlignment.Near,
+        Trimming = StringTrimming.None,
+        FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip | StringFormatFlags.MeasureTrailingSpaces
+    };
+
+    /// <summary>
+    /// Width and height that actually contain the ink, including the right bearing
+    /// and the part of the glyph that sits on the baseline. A box of GetHeight()
+    /// cuts U and B through the middle.
+    /// </summary>
+    private static LineBox MeasureLine(Graphics g, string text, Font font)
+    {
+        using var format = TextFormat(StringAlignment.Near);
+        string sample = string.IsNullOrEmpty(text) ? " " : text;
+        SizeF size = g.MeasureString(sample, font, int.MaxValue, format);
+        float slackX = Math.Max(6f, font.SizeInPoints * 0.55f);
+        float slackY = Math.Max(4f, font.SizeInPoints * 0.5f);
+        float height = Math.Max(size.Height, font.GetHeight(g)) + slackY;
+        return new LineBox(size.Width + slackX, height);
+    }
+
     private GridMetrics MeasureGrid(Graphics g, DetailGroup group, Font font)
     {
-        int nameW = TextWidth(g, string.IsNullOrEmpty(group.ReserveName) ? "P99" : group.ReserveName, font);
-        int pctW = TextWidth(g, string.IsNullOrEmpty(group.ReservePercent) ? "100%" : group.ReservePercent, font);
-        int cellW = nameW + DetailNameGap + pctW;
-        int cellH = (int)Math.Ceiling(font.GetHeight(96f));
+        LineBox name = MeasureLine(g, string.IsNullOrEmpty(group.ReserveName) ? "P99" : group.ReserveName, font);
+        foreach (DetailCell cell in group.Cells)
+            name = new LineBox(Math.Max(name.Width, MeasureLine(g, cell.Name, font).Width), name.Height);
+        float nameW = Math.Min(name.Width, _rhythm.NameCap);
+        LineBox percent = MeasureLine(g, string.IsNullOrEmpty(group.ReservePercent) ? "100%" : group.ReservePercent, font);
+        float cellW = nameW + _rhythm.DetailNameGap + percent.Width;
+        int cellH = (int)Math.Ceiling(percent.Height);
         int slots = Math.Max(1, group.Slots);
         int cols = Math.Min(2, slots);
         int rows = (slots + cols - 1) / cols;
-        int rowGap = DetailRowGap;
-        int width = cellW * cols + Math.Max(0, cols - 1) * DetailColGap;
+        int rowGap = _rhythm.DetailRowGap;
+        int width = (int)Math.Ceiling(cellW * cols + Math.Max(0, cols - 1) * _rhythm.DetailColGap);
         int height = rows * cellH + Math.Max(0, rows - 1) * rowGap;
-        return new GridMetrics(nameW, pctW, cellW, cellH, cols, rows, width, height);
-    }
-
-    private static int TextWidth(Graphics g, string text, Font font)
-    {
-        SizeF size = g.MeasureString(text, font, int.MaxValue, StringFormat.GenericTypographic);
-        return (int)Math.Ceiling(size.Width) + 2;
+        return new GridMetrics((int)Math.Ceiling(nameW), (int)Math.Ceiling(percent.Width), (int)Math.Ceiling(cellW), cellH, cols, rows, width, height);
     }
 
     private void DrawGrid(Graphics g, MetricKind kind, DetailGroup group, float x, float y, Font font)
     {
         GridMetrics grid = MeasureGrid(g, group, font);
-        using var nameFormat = new StringFormat(StringFormat.GenericTypographic)
-        {
-            Alignment = StringAlignment.Near,
-            LineAlignment = StringAlignment.Center,
-            FormatFlags = StringFormatFlags.NoWrap,
-            Trimming = StringTrimming.EllipsisCharacter
-        };
-        using var valueFormat = new StringFormat(StringFormat.GenericTypographic)
-        {
-            Alignment = StringAlignment.Far,
-            LineAlignment = StringAlignment.Center,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
+        using var nameFormat = TextFormat(StringAlignment.Near);
+        using var valueFormat = TextFormat(StringAlignment.Far);
 
         int shown = 0;
         for (int row = 0; row < grid.Rows; row++)
@@ -306,10 +348,10 @@ internal sealed class StatsRenderer : IDisposable
                     return;
 
                 DetailCell cell = group.Cells[shown++];
-                float cx = x + col * (grid.CellWidth + DetailColGap);
-                float cy = y + row * (grid.CellHeight + DetailRowGap);
+                float cx = x + col * (grid.CellWidth + _rhythm.DetailColGap);
+                float cy = y + row * (grid.CellHeight + _rhythm.DetailRowGap);
                 var nameRect = new RectangleF(cx, cy, grid.NameWidth, grid.CellHeight);
-                var pctRect = new RectangleF(cx + grid.NameWidth + DetailNameGap, cy, grid.PercentWidth, grid.CellHeight);
+                var pctRect = new RectangleF(cx + grid.NameWidth + _rhythm.DetailNameGap, cy, grid.PercentWidth, grid.CellHeight);
                 Color accent = Accent(kind, cell.LoadPercent);
                 using var nameBrush = new SolidBrush(Blend(accent, ThemeHelper.DimColor, 0.35f));
                 using var valueBrush = new SolidBrush(accent);
@@ -332,21 +374,19 @@ internal sealed class StatsRenderer : IDisposable
     {
         string reserveValue = GroupLayout.ReserveValue(block.Kind);
         string reserveLabel = GroupLayout.ReserveLabel(block.Kind);
-        float valueW = Math.Max(
-            g.MeasureString(block.Value, valueFont).Width,
-            g.MeasureString(reserveValue, valueFont).Width);
-        float labelW = Math.Max(
-            g.MeasureString(block.Label, labelFont).Width,
-            g.MeasureString(reserveLabel, labelFont).Width);
-        float textW = Math.Max(valueW, labelW);
-        float textH = valueFont.GetHeight(96f) + labelFont.GetHeight(96f) - 2;
+        LineBox value = MeasureLine(g, block.Value, valueFont);
+        LineBox valueReserve = MeasureLine(g, reserveValue, valueFont);
+        LineBox label = MeasureLine(g, block.Label, labelFont);
+        LineBox labelReserve = MeasureLine(g, reserveLabel, labelFont);
+        float textW = Math.Max(Math.Max(value.Width, valueReserve.Width), Math.Max(label.Width, labelReserve.Width));
+        float textH = value.Height + _rhythm.ValueLabelGap + label.Height;
 
         if (compact)
             return new MainMetrics(textW + AccentGutter, textH, textW);
 
-        float iconSide = Math.Max(IconBox, iconFont.GetHeight(96f) + 4);
+        float iconSide = Math.Max(_rhythm.IconSide, iconFont.GetHeight(g) + 6);
         float h = Math.Max(iconSide, textH);
-        float w = AccentGutter + iconSide + IconTextGap + textW;
+        float w = AccentGutter + iconSide + _rhythm.IconGap + textW;
         return new MainMetrics(w, h, textW);
     }
 
@@ -365,7 +405,7 @@ internal sealed class StatsRenderer : IDisposable
 
         GridMetrics grid = MeasureGrid(g, block.Details, detailFont);
         float h = Math.Max(main.Height, grid.Height);
-        return new SizeF(main.Width + DetailBlockGap + grid.Width, h);
+        return new SizeF(main.Width + _rhythm.DetailBlockGap + grid.Width, h);
     }
 
     private void DrawBlock(
@@ -403,46 +443,34 @@ internal sealed class StatsRenderer : IDisposable
 
         if (!compact)
         {
-            float iconSide = Math.Max(IconBox, iconFont.GetHeight(96f) + 4);
+            float iconSide = Math.Max(_rhythm.IconSide, iconFont.GetHeight(g) + 6);
             float iconY = mainTop + (main.Height - iconSide) / 2f;
             var iconRect = new RectangleF(textX, iconY, iconSide, iconSide);
             using (var path = RoundedRect(iconRect, 3))
                 g.FillPath(iconBg, path);
 
-            using var center = new StringFormat
-            {
-                Alignment = StringAlignment.Center,
-                LineAlignment = StringAlignment.Center,
-                FormatFlags = StringFormatFlags.NoWrap
-            };
+            using var center = TextFormat(StringAlignment.Center);
+            center.LineAlignment = StringAlignment.Center;
             g.DrawString(block.IconGlyph, iconFont, accentBrush, iconRect, center);
 
-            textX += iconSide + IconTextGap;
+            textX += iconSide + _rhythm.IconGap;
         }
 
-        float valueH = valueFont.GetHeight(96f);
-        float labelH = labelFont.GetHeight(96f);
-        float stackH = valueH + labelH - 2;
+        LineBox valueBox = MeasureLine(g, block.Value, valueFont);
+        LineBox labelBox = MeasureLine(g, block.Label, labelFont);
+        float stackH = valueBox.Height + _rhythm.ValueLabelGap + labelBox.Height;
         float textY = mainTop + (main.Height - stackH) / 2f;
 
-        using var near = new StringFormat
-        {
-            Alignment = StringAlignment.Near,
-            LineAlignment = StringAlignment.Near,
-            FormatFlags = StringFormatFlags.NoWrap,
-            Trimming = StringTrimming.EllipsisCharacter
-        };
-
-        var labelRect = new RectangleF(textX, textY + valueH - 2, textW, labelH + 2);
-        g.DrawString(block.Value, valueFont, accentBrush, new RectangleF(textX, textY, textW, valueH + 2), near);
-        g.DrawString(block.Label, labelFont, labelBrush, labelRect, near);
+        using var near = TextFormat(StringAlignment.Near);
+        g.DrawString(block.Value, valueFont, accentBrush, new RectangleF(textX, textY, textW, valueBox.Height), near);
+        g.DrawString(block.Label, labelFont, labelBrush, new RectangleF(textX, textY + valueBox.Height + _rhythm.ValueLabelGap, textW, labelBox.Height), near);
         AddHit(new RectangleF(x, y, size.Width, size.Height), BlockTitle(block));
 
         if (block.Details == null)
             return;
 
         GridMetrics grid = MeasureGrid(g, block.Details, detailFont);
-        float gridX = textX + textW + DetailBlockGap;
+        float gridX = textX + textW + _rhythm.DetailBlockGap;
         float gridY = mainTop + (main.Height - grid.Height) / 2f;
         DrawGrid(g, block.Kind, block.Details, gridX, gridY, detailFont);
     }

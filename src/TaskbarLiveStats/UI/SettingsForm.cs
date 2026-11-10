@@ -66,10 +66,11 @@ internal sealed class SettingsForm : AntdUI.Window
     private ColorSwatch? _normalSwatch, _highSwatch;
     private RateUnit _ceilingUnit = RateUnit.Bytes;
 
-    private const int ShowColW = 52;
-    private const int HideColW = 44;
-    private const int ColInset = 2;
-    private const int ColGap = 14;
+    private const int SwitchW = 52;
+    private const int SwitchH = 28;
+    private const int ColInset = 24;
+    private const int ColGap = 28;
+    private const int MetricRowH = 44;
 
     private bool _chromeReady;
     private bool _inChrome;
@@ -241,7 +242,7 @@ internal sealed class SettingsForm : AntdUI.Window
         }
     }
 
-    private void ShowSection(string id)
+    internal void ShowSection(string id)
     {
         _section = id;
         foreach (var page in Pages())
@@ -313,6 +314,12 @@ internal sealed class SettingsForm : AntdUI.Window
         updates.Add(NumberRow(MakeNumber(_draft.UpdateIntervalMs, 100, 10000, 140), out _intervalMs));
         page.Add(updates);
 
+        var units = NewCard();
+        units.Add(Heading("Transfer units"));
+        units.Add(Hint("Used for network and disk speeds on the bar, and for the speed ceiling numbers in Monitoring.", 44));
+        units.Add(SegmentRow(["Bytes/s", "Bits/s"], _draft.RateUnit == RateUnit.Bits ? 1 : 0, out _rateUnitSeg));
+        page.Add(units);
+
         string hotkey = HotkeyHook.Format(_draft.HotkeyModifiers, _draft.HotkeyVirtualKey);
         var shortcut = NewCard();
         shortcut.Add(Heading("Show / hide shortcut"));
@@ -358,19 +365,16 @@ internal sealed class SettingsForm : AntdUI.Window
 
         _ceilingUnit = _draft.RateUnit;
         var ceilings = _draft.RateCeilings ?? new RateCeilings();
-        var units = NewCard();
-        units.Add(Heading("Transfer units"));
-        units.Add(Hint("Used for network and disk speeds.", 24));
-        units.Add(SegmentRow(["Bytes/s", "Bits/s"], _draft.RateUnit == RateUnit.Bits ? 1 : 0, out _rateUnitSeg));
-        units.Add(Heading("Speed ceilings"));
-        units.Add(Hint("Sets the 100% mark for level colors on upload, download, and disk. 0 leaves that speed on its own color. The number uses the transfer unit above.", 52));
-        units.Add(CeilingRow("Upload", CeilingDisplay(ceilings.NetSendBytesPerSec), out _ceilSend, out _ceilSendUnit));
-        units.Add(CeilingRow("Download", CeilingDisplay(ceilings.NetRecvBytesPerSec), out _ceilRecv, out _ceilRecvUnit));
-        units.Add(CeilingRow("Disk read", CeilingDisplay(ceilings.DiskReadBytesPerSec), out _ceilRead, out _ceilReadUnit));
-        units.Add(CeilingRow("Disk write", CeilingDisplay(ceilings.DiskWriteBytesPerSec), out _ceilWrite, out _ceilWriteUnit));
+        var ceilingCard = NewCard();
+        ceilingCard.Add(Heading("Speed ceilings"));
+        ceilingCard.Add(Hint("Sets the 100% mark for level colors on upload, download, and disk. 0 leaves that speed on its own color. The number uses the transfer unit from General.", 64));
+        ceilingCard.Add(CeilingRow("Upload", CeilingDisplay(ceilings.NetSendBytesPerSec), out _ceilSend, out _ceilSendUnit));
+        ceilingCard.Add(CeilingRow("Download", CeilingDisplay(ceilings.NetRecvBytesPerSec), out _ceilRecv, out _ceilRecvUnit));
+        ceilingCard.Add(CeilingRow("Disk read", CeilingDisplay(ceilings.DiskReadBytesPerSec), out _ceilRead, out _ceilReadUnit));
+        ceilingCard.Add(CeilingRow("Disk write", CeilingDisplay(ceilings.DiskWriteBytesPerSec), out _ceilWrite, out _ceilWriteUnit));
         if (_rateUnitSeg != null)
             _rateUnitSeg.SelectIndexChanged += (_, _) => SyncCeilingUnit();
-        page.Add(units);
+        page.Add(ceilingCard);
         return page;
     }
 
@@ -631,9 +635,68 @@ internal sealed class SettingsForm : AntdUI.Window
         TextAlign = ContentAlignment.TopLeft
     };
 
+    private readonly record struct SwitchCols(int HideLeft, int HideWidth, int ShowLeft, int ShowWidth);
+
+    private SwitchCols ColumnsFor(int rowWidth, int hideText, int showText)
+    {
+        int showW = Math.Max(SwitchW, showText);
+        int hideW = Math.Max(SwitchW, hideText);
+        int showLeft = Math.Max(0, rowWidth - ColInset - showW);
+        int hideLeft = Math.Max(0, showLeft - ColGap - hideW);
+        return new SwitchCols(hideLeft, hideW, showLeft, showW);
+    }
+
+    private int CaptionWidth(Label? caption, string fallback)
+    {
+        Font font = caption?.Font ?? _hintFont;
+        int measured = TextRenderer.MeasureText(
+            fallback,
+            font,
+            new Size(int.MaxValue, int.MaxValue),
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.LeftAndRightPadding).Width;
+        int preferred = caption?.PreferredSize.Width ?? 0;
+        return Math.Max(measured, preferred) + 10;
+    }
+
+    private static AntdUI.Switch MakeSwitch(bool isChecked) => new()
+    {
+        Size = new Size(SwitchW, SwitchH),
+        Checked = isChecked
+    };
+
+    private void PlaceMetricColumns(Control row, Label? metric, Control? hide, Control? show, Label? hideCaption, Label? showCaption)
+    {
+        SwitchCols cols = ColumnsFor(
+            Math.Max(0, row.Width),
+            CaptionWidth(hideCaption, "Hide when idle"),
+            CaptionWidth(showCaption, "Show"));
+        if (hideCaption != null)
+            hideCaption.SetBounds(cols.HideLeft, 0, cols.HideWidth, Math.Max(1, row.Height - 1));
+        if (showCaption != null)
+            showCaption.SetBounds(cols.ShowLeft, 0, cols.ShowWidth, Math.Max(1, row.Height - 1));
+        if (hide != null)
+        {
+            hide.Left = cols.HideLeft + Math.Max(0, (cols.HideWidth - hide.Width) / 2);
+            hide.Top = Math.Max(0, (row.Height - hide.Height) / 2);
+        }
+
+        if (show != null)
+        {
+            show.Left = cols.ShowLeft + Math.Max(0, (cols.ShowWidth - show.Width) / 2);
+            show.Top = Math.Max(0, (row.Height - show.Height) / 2);
+        }
+
+        if (metric != null)
+            metric.SetBounds(0, 0, Math.Max(20, cols.HideLeft - 12), row.Height);
+        showCaption?.BringToFront();
+        hideCaption?.BringToFront();
+        show?.BringToFront();
+        hide?.BringToFront();
+    }
+
     private Panel MetricHeader()
     {
-        var row = new Panel { Height = 30, BackColor = BgCard, Margin = Padding.Empty };
+        var row = new Panel { Height = 36, BackColor = BgCard, Margin = Padding.Empty };
         var metric = new Label
         {
             Text = "Metric",
@@ -650,7 +713,7 @@ internal sealed class SettingsForm : AntdUI.Window
             Font = _hintFont,
             ForeColor = TextMuted,
             BackColor = BgCard,
-            TextAlign = ContentAlignment.MiddleRight
+            TextAlign = ContentAlignment.MiddleCenter
         };
         var show = new Label
         {
@@ -664,18 +727,7 @@ internal sealed class SettingsForm : AntdUI.Window
         row.Controls.Add(metric);
         row.Controls.Add(hide);
         row.Controls.Add(show);
-        row.Resize += (_, _) =>
-        {
-            int showLeft = Math.Max(0, row.Width - ShowColW - ColInset);
-            int hideRight = showLeft - ColGap;
-            show.SetBounds(showLeft, 0, ShowColW, Math.Max(1, row.Height - 1));
-            const int hideCaptionW = 118;
-            int hideLeft = Math.Max(0, hideRight - hideCaptionW);
-            hide.SetBounds(hideLeft, 0, Math.Max(40, hideRight - hideLeft), Math.Max(1, row.Height - 1));
-            metric.SetBounds(0, 0, Math.Max(20, hideLeft - 8), Math.Max(1, row.Height - 1));
-            show.BringToFront();
-            hide.BringToFront();
-        };
+        row.Resize += (_, _) => PlaceMetricColumns(row, metric, null, null, hide, show);
         row.Paint += (_, e) =>
         {
             using var pen = new Pen(Color.FromArgb(58, 58, 64));
@@ -689,7 +741,7 @@ internal sealed class SettingsForm : AntdUI.Window
     {
         Text = text,
         AutoSize = false,
-        Height = 28,
+        Height = 40,
         Font = _sectionFont,
         ForeColor = TextMuted,
         BackColor = BgCard,
@@ -698,7 +750,7 @@ internal sealed class SettingsForm : AntdUI.Window
 
     private Panel MetricRow(string name, bool shown, out AntdUI.Switch showSwitch, bool hideIdle, out AntdUI.Switch hideSwitch)
     {
-        var row = new Panel { Height = 40, BackColor = BgCard, Margin = Padding.Empty };
+        var row = new Panel { Height = MetricRowH, BackColor = BgCard, Margin = Padding.Empty };
         var label = new Label
         {
             Text = name,
@@ -708,29 +760,15 @@ internal sealed class SettingsForm : AntdUI.Window
             BackColor = BgCard,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        hideSwitch = new AntdUI.Switch { Size = new Size(HideColW, 24), Checked = hideIdle };
-        showSwitch = new AntdUI.Switch { Size = new Size(ShowColW, 28), Checked = shown };
+        hideSwitch = MakeSwitch(hideIdle);
+        showSwitch = MakeSwitch(shown);
         var show = showSwitch;
         var hide = hideSwitch;
         row.Controls.Add(label);
         row.Controls.Add(hide);
         row.Controls.Add(show);
-        row.Resize += (_, _) =>
-        {
-            PlaceSwitchColumns(row, show, hide);
-            label.SetBounds(0, 0, Math.Max(20, hide.Left - 12), row.Height);
-            show.BringToFront();
-            hide.BringToFront();
-        };
+        row.Resize += (_, _) => PlaceMetricColumns(row, label, hide, show, null, null);
         return row;
-    }
-
-    private static void PlaceSwitchColumns(Control row, Control show, Control hide)
-    {
-        show.Left = Math.Max(0, row.Width - ShowColW - ColInset);
-        show.Top = Math.Max(0, (row.Height - show.Height) / 2);
-        hide.Left = Math.Max(0, show.Left - ColGap - HideColW);
-        hide.Top = Math.Max(0, (row.Height - hide.Height) / 2);
     }
 
     private decimal CeilingDisplay(double bytesPerSec)
@@ -745,7 +783,7 @@ internal sealed class SettingsForm : AntdUI.Window
         field = MakeNumber(value, 0, 100000, 120);
         field.DecimalPlaces = 1;
         field.Increment = 1;
-        var row = new Panel { Height = 42, BackColor = BgCard, Margin = Padding.Empty };
+        var row = new Panel { Height = MetricRowH, BackColor = BgCard, Margin = Padding.Empty };
         var label = new Label
         {
             Text = name,
@@ -759,7 +797,6 @@ internal sealed class SettingsForm : AntdUI.Window
         {
             Text = RateCeilings.UnitLabel(_ceilingUnit),
             AutoSize = false,
-            Size = new Size(72, 34),
             Font = _hintFont,
             ForeColor = TextMuted,
             BackColor = BgCard,
@@ -767,12 +804,19 @@ internal sealed class SettingsForm : AntdUI.Window
         };
         var number = field;
         var unitLabel = unit;
-        number.Location = new Point(150, 4);
-        unitLabel.Location = new Point(278, 4);
-        label.SetBounds(0, 0, 140, 42);
+        const int labelW = 150;
+        const int gap = 12;
         row.Controls.Add(label);
         row.Controls.Add(number);
         row.Controls.Add(unitLabel);
+        row.Resize += (_, _) =>
+        {
+            label.SetBounds(0, 0, labelW, row.Height);
+            int numY = Math.Max(0, (row.Height - number.Height) / 2);
+            number.Location = new Point(labelW + gap, numY);
+            int unitX = number.Right + gap;
+            unitLabel.SetBounds(unitX, 0, Math.Max(48, row.Width - unitX), row.Height);
+        };
         return row;
     }
 
@@ -864,11 +908,7 @@ internal sealed class SettingsForm : AntdUI.Window
             BackColor = BgCard,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        toggle = new AntdUI.Switch
-        {
-            Size = new Size(52, 28),
-            Checked = isChecked
-        };
+        toggle = MakeSwitch(isChecked);
         var sw = toggle;
         row.Controls.Add(label);
         row.Controls.Add(sw);

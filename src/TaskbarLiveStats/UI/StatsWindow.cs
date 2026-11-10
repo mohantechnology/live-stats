@@ -736,6 +736,8 @@ internal sealed class StatsWindow : Form
     private void SyncDetailAnchor()
     {
         _renderer.DetailAnchor = DetailAnchor.Center;
+        if (FrameHasDetails(_frame))
+            return;
         if (_settings.PlacementMode != PlacementMode.Taskbar || _lastInfo.TrayHwnd == IntPtr.Zero)
             return;
 
@@ -748,6 +750,17 @@ internal sealed class StatsWindow : Form
             _renderer.DetailAnchor = DetailAnchor.Bottom;
         else if (_lastInfo.TrayRect.Top <= screen.Top + 16)
             _renderer.DetailAnchor = DetailAnchor.Top;
+    }
+
+    private static bool FrameHasDetails(OverlayFrame frame)
+    {
+        foreach (MetricBlock block in frame.Main)
+        {
+            if (block.Details != null)
+                return true;
+        }
+
+        return false;
     }
 
     private void ToggleUsageDetails()
