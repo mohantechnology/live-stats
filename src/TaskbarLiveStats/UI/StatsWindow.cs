@@ -518,10 +518,13 @@ internal sealed class StatsWindow : Form
 
     private static bool IsOnAnyScreen(int x, int y, int w, int h)
     {
-        var center = new Point(x + w / 2, y + h / 2);
+        var window = new Rectangle(x, y, Math.Max(1, w), Math.Max(1, h));
+        int keep = Math.Min(MinVisiblePx, Math.Min(window.Width, window.Height));
         foreach (Screen s in Screen.AllScreens)
         {
-            if (s.Bounds.Contains(center))
+            Rectangle hit = Rectangle.Intersect(s.Bounds, window);
+            // A parked off-edge strip still counts if enough of it can be grabbed.
+            if (hit.Width >= keep && hit.Height >= keep)
                 return true;
         }
         return false;
@@ -695,13 +698,16 @@ internal sealed class StatsWindow : Form
         PaintFrame();
     }
 
+    /// <summary>How many pixels must stay on a screen so the overlay can still be grabbed.</summary>
+    private const int MinVisiblePx = 10;
+
     private void ClampToVirtualScreen()
     {
         var vs = SystemInformation.VirtualScreen;
-        // A long busiest list can be taller or wider than the desktop. Math.Clamp
-        // throws when the max is below the min, so pin that edge to the screen instead.
-        int x = FitOnScreen(Left, vs.Left, vs.Right - Width);
-        int y = FitOnScreen(Top, vs.Top, vs.Bottom - Height);
+        int keep = Math.Min(MinVisiblePx, Math.Min(Math.Max(1, Width), Math.Max(1, Height)));
+        // Allow hanging off any edge; only keep a grab strip inside the virtual desktop.
+        int x = FitOnScreen(Left, vs.Left - Width + keep, vs.Right - keep);
+        int y = FitOnScreen(Top, vs.Top - Height + keep, vs.Bottom - keep);
         if (x != Left || y != Top)
             SetBounds(x, y, Width, Height);
     }
