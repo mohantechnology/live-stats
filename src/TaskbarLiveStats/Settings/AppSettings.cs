@@ -427,6 +427,9 @@ internal sealed class AppSettings
 
     public MetricPalette Colors { get; set; } = new();
 
+    /// <summary>Live-stats panel fill as #RRGGBB. Empty follows the Windows taskbar theme.</summary>
+    public string OverlayBackground { get; set; } = "";
+
     public UsageColorBands UsageColors { get; set; } = new();
 
     /// <summary>Bytes per second. Zero keeps that speed on its own color.</summary>
@@ -480,6 +483,7 @@ internal sealed class AppSettings
         HotkeyModifiers = HotkeyModifiers,
         HotkeyVirtualKey = HotkeyVirtualKey,
         Colors = (Colors ?? new MetricPalette()).Clone(),
+        OverlayBackground = OverlayBackground ?? "",
         UsageColors = (UsageColors ?? new UsageColorBands()).Clone(),
         RateCeilings = (RateCeilings ?? new RateCeilings()).Clone()
     };

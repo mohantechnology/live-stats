@@ -82,6 +82,7 @@ internal sealed class SettingsForm : AntdUI.Window
     private AntdUI.InputNumber? _ceilSend, _ceilRecv, _ceilRead, _ceilWrite;
     private Label? _ceilSendUnit, _ceilRecvUnit, _ceilReadUnit, _ceilWriteUnit;
     private ColorSwatch? _normalSwatch, _highSwatch;
+    private ColorSwatch? _overlayBgSwatch;
     private RateUnit _ceilingUnit = RateUnit.Bytes;
 
     private const int SwitchW = 52;
@@ -491,6 +492,16 @@ internal sealed class SettingsForm : AntdUI.Window
         layout.Add(ButtonRow(reset));
         page.Add(layout);
 
+        var background = NewCard();
+        background.Add(Heading("Background"));
+        background.Add(Hint("Fill color of the live stats panel. Reset colors restores the Windows taskbar theme default.", 40));
+        background.Add(ColorRow(
+            "Panel background",
+            ThemeHelper.ResolveOverlayFill(_draft.OverlayBackground),
+            out var overlayBgSwatch));
+        _overlayBgSwatch = overlayBgSwatch;
+        page.Add(background);
+
         var bands = _draft.UsageColors ?? new UsageColorBands();
         bands.Normalize();
         var colors = NewCard();
@@ -524,6 +535,8 @@ internal sealed class SettingsForm : AntdUI.Window
             _highSwatch?.SetColor(MetricPalette.Parse(levelDefaults.High, UsageColorBands.DefaultHigh));
             if (_idleBelow != null) _idleBelow.Value = UsageColorBands.DefaultIdleBelow;
             if (_highAbove != null) _highAbove.Value = UsageColorBands.DefaultHighAbove;
+            _draft.OverlayBackground = "";
+            _overlayBgSwatch?.SetColor(ThemeHelper.TaskbarFillColor);
         };
         colors.Add(ButtonRow(resetColors));
         page.Add(colors);
@@ -656,6 +669,9 @@ internal sealed class SettingsForm : AntdUI.Window
         _draft.Colors ??= new MetricPalette();
         foreach (var (kind, swatch) in _swatches)
             MetricColors.Assign(_draft.Colors, kind, swatch.BackColor);
+
+        if (_overlayBgSwatch != null)
+            _draft.OverlayBackground = MetricPalette.ToHex(_overlayBgSwatch.BackColor);
 
         _draft.UsageColors ??= new UsageColorBands();
         if (_idleBelow != null) _draft.UsageColors.IdleBelowPercent = (int)_idleBelow.Value;

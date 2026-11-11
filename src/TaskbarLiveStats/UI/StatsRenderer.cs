@@ -39,8 +39,11 @@ internal sealed class StatsRenderer : IDisposable
     private Rhythm _rhythm;
     private MetricPalette _colors = new();
     private UsageColorBands _bands = new();
+    private Color _fillColor = ThemeHelper.TaskbarFillColor;
     private DetailAnchor _detailAnchor = DetailAnchor.Center;
     private readonly List<OverlayHit> _hits = new();
+
+    public Color FillColor => _fillColor;
 
     public string? TitleAt(Point point)
     {
@@ -101,6 +104,7 @@ internal sealed class StatsRenderer : IDisposable
         _colors = (settings.Colors ?? new MetricPalette()).Clone();
         _bands = (settings.UsageColors ?? new UsageColorBands()).Clone();
         _bands.Normalize();
+        _fillColor = ThemeHelper.ResolveOverlayFill(settings.OverlayBackground);
     }
 
     public DetailAnchor DetailAnchor
@@ -153,7 +157,7 @@ internal sealed class StatsRenderer : IDisposable
         EnsureBitmap(width, height);
         using (var g = Graphics.FromImage(_bitmap!))
         {
-            g.Clear(ThemeHelper.TaskbarFillColor);
+            g.Clear(_fillColor);
             PaintGdi(g, frame, width, height);
         }
 

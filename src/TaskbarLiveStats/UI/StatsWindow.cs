@@ -138,6 +138,7 @@ internal sealed class StatsWindow : Form
         if (hideIdleChanged)
             _idleWatches.Clear();
         _renderer.ApplyTypography(_settings);
+        BackColor = _renderer.FillColor;
         if (orientationChanged || metricsChanged || rateUnitChanged || densityChanged || fontChanged)
             _renderer.ResetSizeLock();
 
@@ -621,14 +622,14 @@ internal sealed class StatsWindow : Form
     {
         if (!_gdiPaint && (_settings.PlacementMode == PlacementMode.Floating || _embedder.IsLayered))
             return;
-        e.Graphics.Clear(ThemeHelper.TaskbarFillColor);
+        e.Graphics.Clear(_renderer.FillColor);
         _renderer.PaintGdi(e.Graphics, _frame, ClientSize.Width, ClientSize.Height);
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         if (_gdiPaint || (_settings.PlacementMode == PlacementMode.Taskbar && !_embedder.IsLayered))
-            e.Graphics.Clear(ThemeHelper.TaskbarFillColor);
+            e.Graphics.Clear(_renderer.FillColor);
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
