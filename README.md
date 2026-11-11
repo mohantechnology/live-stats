@@ -5,22 +5,42 @@ Live CPU, memory, GPU, network, and disk stats embedded in the Windows taskbar.
 ## Requirements
 
 - Windows 10/11 (x64)
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to build
-- For framework-dependent publish: [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) to build
+- For framework-dependent publish: [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+## Install .NET 10 SDK
+
+From PowerShell:
+
+```powershell
+winget install Microsoft.DotNet.SDK.10
+```
+
+Open a new terminal after install, then confirm the SDK:
+
+```powershell
+dotnet --version
+```
+
+The Desktop Runtime is included with the SDK. For a machine that only runs the framework-dependent build:
+
+```powershell
+winget install Microsoft.DotNet.DesktopRuntime.10
+```
 
 ## Build and run (development)
 
 From the repo root (`d:\dev_software\taskbar-live-stats`):
 
 ```powershell
-dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release
-dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release --no-build
+dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows
+dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows --no-build
 ```
 
 Or build and run in one step:
 
 ```powershell
-dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release
+dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows
 ```
 
 Stop the app from the tray icon (right-click → Exit) before rebuilding if the EXE is locked.
@@ -45,7 +65,7 @@ Run it:
 .\publish\TaskbarLiveStats.exe
 ```
 
-Smaller build that requires the .NET 8 Desktop Runtime:
+Smaller build that requires the .NET 10 Desktop Runtime:
 
 ```powershell
 dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release /p:PublishProfile=FrameworkDependent
