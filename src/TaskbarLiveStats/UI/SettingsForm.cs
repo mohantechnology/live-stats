@@ -66,6 +66,8 @@ internal sealed class SettingsForm : AntdUI.Window
     private const int HistoryCustomIndex = 7;
     private readonly System.Windows.Forms.Timer _historyTimer = new() { Interval = 60_000 };
     private AntdUI.Switch? _showDetails;
+    private AntdUI.Switch? _showLabelsCollapsed;
+    private AntdUI.Switch? _showLabelsExpanded;
     private AntdUI.InputNumber? _detailCount;
     private AntdUI.Segmented? _orientSeg;
     private AntdUI.Segmented? _placeSeg;
@@ -400,6 +402,14 @@ internal sealed class SettingsForm : AntdUI.Window
         metrics.Add(MetricRow("Disk write", _draft.Metrics.DiskWrite, out _diskWrite, idle.DiskWrite, out _diskWriteHide, totals.DiskWrite, out _diskWriteTotal));
         page.Add(metrics);
 
+        var labels = NewCard();
+        labels.Add(Heading("Labels"));
+        labels.Add(SwitchRow("Show label in minimize mode", _draft.ShowLabelsCollapsed, out _showLabelsCollapsed));
+        labels.Add(Hint("When busiest items are hidden. Shows names like CPU and VRAM under each value. Hover still shows the full title when labels are off.", 56));
+        labels.Add(SwitchRow("Show label in maximize mode", _draft.ShowLabelsExpanded, out _showLabelsExpanded));
+        labels.Add(Hint("When busiest items are shown (left-click the bar). Same names under each value; hover still works when labels are off.", 48));
+        page.Add(labels);
+
         var details = NewCard();
         details.Add(Heading("Busiest items"));
         details.Add(SwitchRow("Show busiest items", _draft.ShowUsageDetails, out _showDetails));
@@ -432,7 +442,7 @@ internal sealed class SettingsForm : AntdUI.Window
         var size = NewCard();
         size.Add(Heading("Size"));
         size.Add(SegmentRow(["Default", "Compact"], _draft.Density == OverlayDensity.Compact ? 1 : 0, out _densitySeg));
-        size.Add(Hint("Compact hides the icons. Color still marks each metric, so upload and disk write stay distinct.", 40));
+        size.Add(Hint("Both densities use single-line chips sized for the taskbar. Compact hides glyphs and tightens type further; accent color still separates each metric.", 52));
         size.Add(Heading("Font sizes (Default)"));
         size.Add(CaptionRow("Value", "Label (pt)", "Details (pt)"));
         size.Add(FontRow(
@@ -606,6 +616,8 @@ internal sealed class SettingsForm : AntdUI.Window
         WriteCeilings(_ceilingUnit);
 
         if (_showDetails != null) _draft.ShowUsageDetails = _showDetails.Checked;
+        if (_showLabelsCollapsed != null) _draft.ShowLabelsCollapsed = _showLabelsCollapsed.Checked;
+        if (_showLabelsExpanded != null) _draft.ShowLabelsExpanded = _showLabelsExpanded.Checked;
         if (_detailCount != null)
             _draft.UsageDetailCount = (int)Math.Clamp(_detailCount.Value, 1, AppSettings.MaxUsageDetailCount);
 

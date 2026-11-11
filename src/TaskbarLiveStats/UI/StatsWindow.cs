@@ -121,6 +121,8 @@ internal sealed class StatsWindow : Form
             !(_settings.TotalUsage ?? new TotalUsageToggles()).SameAs(settings.TotalUsage ?? new TotalUsageToggles()) ||
             _settings.TotalSince != settings.TotalSince ||
             _settings.ShowUsageDetails != settings.ShowUsageDetails ||
+            _settings.ShowLabelsCollapsed != settings.ShowLabelsCollapsed ||
+            _settings.ShowLabelsExpanded != settings.ShowLabelsExpanded ||
             _settings.UsageDetailCount != settings.UsageDetailCount;
         bool hideIdleChanged = !_settings.HideWhenIdle.SameAs(settings.HideWhenIdle);
         bool rateUnitChanged = _settings.RateUnit != settings.RateUnit;
@@ -199,9 +201,17 @@ internal sealed class StatsWindow : Form
 
     private void RemeasureAndPaint()
     {
-        int thickness = _settings.PlacementMode == PlacementMode.Taskbar && _lastInfo.TrayHwnd != IntPtr.Zero
-            ? Math.Max(32, _lastInfo.TrayRect.Height)
-            : 40;
+        int thickness;
+        if (_settings.PlacementMode == PlacementMode.Taskbar && _lastInfo.TrayHwnd != IntPtr.Zero)
+        {
+            thickness = _settings.Orientation == OverlayOrientation.Vertical
+                ? Math.Max(24, Math.Min(_lastInfo.TrayRect.Width, _lastInfo.TrayRect.Height))
+                : Math.Max(32, _lastInfo.TrayRect.Height);
+        }
+        else
+        {
+            thickness = _settings.Orientation == OverlayOrientation.Vertical ? 24 : 40;
+        }
 
         SyncDetailAnchor();
         var measured = _renderer.Measure(_frame, thickness);
@@ -270,9 +280,10 @@ internal sealed class StatsWindow : Form
         _lastTrayRect = info.TrayRect;
         _lastNotifyRect = info.NotifyRect;
 
-        int barHeight = Math.Max(32, info.TrayRect.Height);
-        if (_settings.Orientation == OverlayOrientation.Vertical)
-            barHeight = 40;
+        // Preferred thickness follows the tray when horizontal; vertical stacks size from content.
+        int barHeight = _settings.Orientation == OverlayOrientation.Vertical
+            ? Math.Max(24, Math.Min(info.TrayRect.Width, info.TrayRect.Height))
+            : Math.Max(32, info.TrayRect.Height);
 
         SyncDetailAnchor();
         var measured = _renderer.Measure(_frame, barHeight);

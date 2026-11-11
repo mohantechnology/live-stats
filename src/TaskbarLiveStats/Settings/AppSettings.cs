@@ -369,17 +369,17 @@ internal sealed class AppSettings
     public OverlayDensity Density { get; set; } = OverlayDensity.Default;
 
     /// <summary>Value font size (pt) when Density is Default.</summary>
-    public float DefaultValueFontPt { get; set; } = 12f;
+    public float DefaultValueFontPt { get; set; } = 11f;
     /// <summary>Label font size (pt) when Density is Default.</summary>
-    public float DefaultLabelFontPt { get; set; } = 8f;
+    public float DefaultLabelFontPt { get; set; } = 7.5f;
     /// <summary>Value font size (pt) when Density is Compact.</summary>
     public float CompactValueFontPt { get; set; } = 10f;
     /// <summary>Label font size (pt) when Density is Compact.</summary>
-    public float CompactLabelFontPt { get; set; } = 7.5f;
+    public float CompactLabelFontPt { get; set; } = 7f;
     /// <summary>Busiest-item font size (pt) when Density is Default.</summary>
-    public float DefaultDetailFontPt { get; set; } = 7.5f;
+    public float DefaultDetailFontPt { get; set; } = 7f;
     /// <summary>Busiest-item font size (pt) when Density is Compact.</summary>
-    public float CompactDetailFontPt { get; set; } = 7f;
+    public float CompactDetailFontPt { get; set; } = 6.5f;
 
     /// <summary>Metrics sample interval in milliseconds (100–10000).</summary>
     public int UpdateIntervalMs { get; set; } = 1000;
@@ -392,6 +392,12 @@ internal sealed class AppSettings
 
     /// <summary>Show the busiest-cores and busiest-engine panel. Left-click toggles it.</summary>
     public bool ShowUsageDetails { get; set; } = true;
+
+    /// <summary>Show metric names under values when busiest items are hidden (collapsed bar).</summary>
+    public bool ShowLabelsCollapsed { get; set; } = true;
+
+    /// <summary>Show metric names under values when busiest items are visible (expanded bar).</summary>
+    public bool ShowLabelsExpanded { get; set; } = true;
 
     /// <summary>Legacy global switch. Migrated into <see cref="HideWhenIdle"/> on load.</summary>
     public bool HideIdleMetrics { get; set; }
@@ -461,6 +467,8 @@ internal sealed class AppSettings
         UpdateIntervalMs = Math.Clamp(UpdateIntervalMs, 100, 10_000),
         UsageDetailCount = Math.Clamp(UsageDetailCount <= 0 ? 3 : UsageDetailCount, 1, MaxUsageDetailCount),
         ShowUsageDetails = ShowUsageDetails,
+        ShowLabelsCollapsed = ShowLabelsCollapsed,
+        ShowLabelsExpanded = ShowLabelsExpanded,
         HideIdleMetrics = HideIdleMetrics,
         HideWhenIdle = (HideWhenIdle ?? new IdleHideToggles()).Clone(),
         TotalUsage = (TotalUsage ?? new TotalUsageToggles()).Clone(),

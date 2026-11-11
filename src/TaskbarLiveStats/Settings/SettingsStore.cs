@@ -48,6 +48,7 @@ internal sealed class SettingsStore
             loaded.HideWhenIdle ??= new IdleHideToggles();
             loaded.TotalUsage ??= new TotalUsageToggles();
             ApplyHistoryMigration(json, loaded);
+            ApplyLabelMigration(json, loaded);
             if (loaded.HideIdleMetrics)
             {
                 loaded.HideWhenIdle = IdleHideToggles.AllOn();
@@ -62,12 +63,12 @@ internal sealed class SettingsStore
             loaded.Opacity = Math.Clamp(loaded.Opacity, 0.5, 1.0);
             loaded.UpdateIntervalMs = Math.Clamp(loaded.UpdateIntervalMs <= 0 ? 1000 : loaded.UpdateIntervalMs, 100, 10_000);
             loaded.UsageDetailCount = Math.Clamp(loaded.UsageDetailCount <= 0 ? 3 : loaded.UsageDetailCount, 1, AppSettings.MaxUsageDetailCount);
-            loaded.DefaultValueFontPt = Math.Clamp(loaded.DefaultValueFontPt <= 0 ? 12f : loaded.DefaultValueFontPt, 7f, 28f);
-            loaded.DefaultLabelFontPt = Math.Clamp(loaded.DefaultLabelFontPt <= 0 ? 8f : loaded.DefaultLabelFontPt, 6f, 18f);
+            loaded.DefaultValueFontPt = Math.Clamp(loaded.DefaultValueFontPt <= 0 ? 11f : loaded.DefaultValueFontPt, 7f, 28f);
+            loaded.DefaultLabelFontPt = Math.Clamp(loaded.DefaultLabelFontPt <= 0 ? 7.5f : loaded.DefaultLabelFontPt, 6f, 18f);
             loaded.CompactValueFontPt = Math.Clamp(loaded.CompactValueFontPt <= 0 ? 10f : loaded.CompactValueFontPt, 7f, 28f);
-            loaded.CompactLabelFontPt = Math.Clamp(loaded.CompactLabelFontPt <= 0 ? 7.5f : loaded.CompactLabelFontPt, 6f, 18f);
-            loaded.DefaultDetailFontPt = Math.Clamp(loaded.DefaultDetailFontPt <= 0 ? 7.5f : loaded.DefaultDetailFontPt, 6f, 18f);
-            loaded.CompactDetailFontPt = Math.Clamp(loaded.CompactDetailFontPt <= 0 ? 7f : loaded.CompactDetailFontPt, 6f, 18f);
+            loaded.CompactLabelFontPt = Math.Clamp(loaded.CompactLabelFontPt <= 0 ? 7f : loaded.CompactLabelFontPt, 6f, 18f);
+            loaded.DefaultDetailFontPt = Math.Clamp(loaded.DefaultDetailFontPt <= 0 ? 7f : loaded.DefaultDetailFontPt, 6f, 18f);
+            loaded.CompactDetailFontPt = Math.Clamp(loaded.CompactDetailFontPt <= 0 ? 6.5f : loaded.CompactDetailFontPt, 6f, 18f);
             if (loaded.HotkeyVirtualKey == 0)
                 loaded.HotkeyVirtualKey = HotkeyDefaults.VirtualKey;
             if (loaded.HotkeyModifiers == 0)
@@ -123,6 +124,35 @@ internal sealed class SettingsStore
                 loaded.SaveNetworkHistory = loaded.SaveUsageHistory;
                 loaded.SaveDiskHistory = loaded.SaveUsageHistory;
             }
+        }
+        catch
+        {
+            // Keep the defaults already deserialized.
+        }
+    }
+
+    /// <summary>
+    /// Older builds had a single showMetricLabels switch. Copy it onto both
+    /// collapsed and expanded toggles when the new keys are absent.
+    /// </summary>
+    private static void ApplyLabelMigration(string json, AppSettings loaded)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return;
+            bool hasCollapsed = doc.RootElement.TryGetProperty("showLabelsCollapsed", out _);
+            bool hasExpanded = doc.RootElement.TryGetProperty("showLabelsExpanded", out _);
+            if (hasCollapsed || hasExpanded)
+                return;
+            if (!doc.RootElement.TryGetProperty("showMetricLabels", out JsonElement legacy) ||
+                legacy.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return;
+
+            bool on = legacy.GetBoolean();
+            loaded.ShowLabelsCollapsed = on;
+            loaded.ShowLabelsExpanded = on;
         }
         catch
         {
