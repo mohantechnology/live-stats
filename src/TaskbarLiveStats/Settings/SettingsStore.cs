@@ -46,6 +46,8 @@ internal sealed class SettingsStore
 
             loaded.Metrics ??= new MetricToggles();
             loaded.HideWhenIdle ??= new IdleHideToggles();
+            loaded.TotalUsage ??= new TotalUsageToggles();
+            ApplyHistoryMigration(json, loaded);
             if (loaded.HideIdleMetrics)
             {
                 loaded.HideWhenIdle = IdleHideToggles.AllOn();
@@ -95,10 +97,36 @@ internal sealed class SettingsStore
         settings.UsageColors.Normalize();
         settings.RateCeilings ??= new RateCeilings();
         settings.RateCeilings.Normalize();
+        settings.SaveUsageHistory = settings.SaveNetworkHistory || settings.SaveDiskHistory;
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         string? dir = System.IO.Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
         File.WriteAllText(_path, json);
+    }
+
+    /// <summary>
+    /// Old settings files have only saveUsageHistory. Copy that onto both blocks
+    /// when the new keys were never written.
+    /// </summary>
+    private static void ApplyHistoryMigration(string json, AppSettings loaded)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return;
+            bool hasNetwork = doc.RootElement.TryGetProperty("saveNetworkHistory", out _);
+            bool hasDisk = doc.RootElement.TryGetProperty("saveDiskHistory", out _);
+            if (!hasNetwork && !hasDisk)
+            {
+                loaded.SaveNetworkHistory = loaded.SaveUsageHistory;
+                loaded.SaveDiskHistory = loaded.SaveUsageHistory;
+            }
+        }
+        catch
+        {
+            // Keep the defaults already deserialized.
+        }
     }
 }

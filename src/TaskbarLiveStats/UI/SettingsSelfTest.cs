@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using TaskbarLiveStats.Metrics;
 using TaskbarLiveStats.Settings;
 
 namespace TaskbarLiveStats.UI;
@@ -112,6 +115,9 @@ internal static class SettingsSelfTest
         form.Hide();
 
         AssertUsageAndSize(failures);
+        AssertTotals(failures);
+        AssertSession(failures);
+        AssertHistoryStore(failures);
 
         string report = failures.Count == 0
             ? "SELF-TEST PASS\n- Settings chrome / TopMost OK\n- Orientation independent of Placement OK\n- Memory/VRAM percent labels OK\n"
@@ -122,6 +128,164 @@ internal static class SettingsSelfTest
         Console.Write(report);
         Console.WriteLine("Wrote " + outPath);
         return failures.Count == 0 ? 0 : 1;
+    }
+
+    private static void AssertTotals(List<string> failures)
+    {
+        var defaults = AppSettings.CreateDefaults();
+        if (!defaults.SaveUsageHistory || !defaults.SaveNetworkHistory || !defaults.SaveDiskHistory)
+            failures.Add("Network and disk history should be on by default.");
+        if (defaults.TotalSince != TotalSince.Restart)
+            failures.Add("Total since should default to the since-reboot counter.");
+        if (!defaults.TotalUsage.NetSend || !defaults.TotalUsage.NetRecv || !defaults.TotalUsage.DiskRead || !defaults.TotalUsage.DiskWrite)
+            failures.Add("Total usage switches should be on by default.");
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+        };
+        var legacy = JsonSerializer.Deserialize<AppSettings>("{}", options);
+        if (legacy == null || !legacy.SaveUsageHistory || !legacy.SaveNetworkHistory || !legacy.SaveDiskHistory || legacy.TotalUsage?.DiskRead != true)
+            failures.Add("Old settings files should keep total usage and history saving on.");
+
+        string settingsPath = Path.Combine(Path.GetTempPath(), "tls-settings-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(settingsPath, """{"saveUsageHistory":false}""");
+            var migrated = new SettingsStore(settingsPath).Load(out bool firstRun);
+            if (firstRun || migrated.SaveNetworkHistory || migrated.SaveDiskHistory)
+                failures.Add("Turning history off in an old settings file should turn both blocks off.");
+        }
+        catch (Exception ex)
+        {
+            failures.Add("History migration failed: " + ex.Message);
+        }
+        finally
+        {
+            try { if (File.Exists(settingsPath)) File.Delete(settingsPath); } catch { /* temp cleanup */ }
+        }
+
+        ulong gib = 1024UL * 1024UL * 1024UL;
+        var snap = new MetricsSnapshot
+        {
+            NetSendBytesPerSec = 1500,
+            NetRecvBytesPerSec = 1500,
+            DiskReadBytesPerSec = 1500,
+            DiskWriteBytesPerSec = 1500,
+            NetSendTotalBytes = gib,
+            NetRecvTotalBytes = 2 * gib,
+            DiskReadTotalBytes = 3 * gib,
+            DiskWriteTotalBytes = 4 * gib,
+            NetSendStartupBytes = 2 * gib,
+            NetRecvStartupBytes = 3 * gib,
+            DiskReadStartupBytes = 4 * gib,
+            DiskWriteStartupBytes = 5 * gib
+        };
+        var frame = GroupLayout.FromSnapshot(snap, defaults);
+        ExpectLabel(frame, MetricKind.NetSend, "Upload  1.0 GB", failures);
+        ExpectLabel(frame, MetricKind.NetRecv, "Download  2.0 GB", failures);
+        ExpectLabel(frame, MetricKind.DiskRead, "Disk read  3.0 GB", failures);
+        ExpectLabel(frame, MetricKind.DiskWrite, "Disk write  4.0 GB", failures);
+        var upload = frame.Main.FirstOrDefault(b => b.Kind == MetricKind.NetSend);
+        if (upload.LabelReserve == null || !upload.LabelReserve.Contains("888.8 GB", StringComparison.Ordinal))
+            failures.Add($"Upload reserve should stay on the GB unit, got '{upload.LabelReserve}'.");
+        if (!GroupLayout.Tooltip(snap, defaults).Contains("1.0 GB", StringComparison.Ordinal))
+            failures.Add("Tooltip should include the upload total.");
+
+        var startupBasis = defaults.Clone();
+        startupBasis.TotalSince = TotalSince.Startup;
+        ExpectLabel(GroupLayout.FromSnapshot(snap, startupBasis), MetricKind.NetSend, "Upload  2.0 GB", failures);
+        ExpectLabel(GroupLayout.FromSnapshot(snap, startupBasis), MetricKind.DiskWrite, "Disk write  5.0 GB", failures);
+        if (!GroupLayout.Tooltip(snap, startupBasis).Contains("2.0 GB", StringComparison.Ordinal))
+            failures.Add("Startup tooltip should use the session total.");
+
+        var hidden = defaults.Clone();
+        hidden.TotalUsage.NetSend = false;
+        hidden.TotalUsage.NetRecv = false;
+        hidden.TotalUsage.DiskRead = false;
+        hidden.TotalUsage.DiskWrite = false;
+        ExpectLabel(GroupLayout.FromSnapshot(snap, hidden), MetricKind.NetSend, "Upload", failures);
+        if (!defaults.TotalUsage.NetSend)
+            failures.Add("Hiding totals on a clone changed the original.");
+
+        using var disk = new DiskCollector();
+        var reading = disk.Sample();
+        const ulong absurd = 100UL << 40;
+        if (reading.TotalsValid && (reading.ReadBytes > absurd || reading.WriteBytes > absurd))
+            failures.Add($"Disk since-boot totals look misread: read={reading.ReadBytes} write={reading.WriteBytes}.");
+    }
+
+    private static void ExpectLabel(OverlayFrame frame, MetricKind kind, string label, List<string> failures)
+    {
+        var block = frame.Main.FirstOrDefault(b => b.Kind == kind);
+        if (block.Label != label)
+            failures.Add($"Expected {kind} label '{label}', got '{block.Label}'.");
+    }
+
+    private static void AssertHistoryStore(List<string> failures)
+    {
+        string path = Path.Combine(Path.GetTempPath(), "tls-usage-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            var now = DateTime.UtcNow;
+            using (var store = new UsageHistoryStore(path))
+            {
+                store.SetRecording(true, true);
+                store.Add(now, 1000, 2000, 3000, 4000);
+                store.SetRecording(false, false);
+                store.Add(now, 9, 9, 9, 9);
+                store.SetRecording(true, false);
+                store.Add(now, 5, 6, 7, 8);
+            }
+
+            if (!UsageHistoryStore.HasAny(path))
+            {
+                failures.Add("History store did not keep a minute.");
+                return;
+            }
+
+            var window = UsageHistoryStore.Resolve(UsageRange.Day, DateTime.Now, null, null);
+            ulong send = 0, recv = 0, read = 0, write = 0;
+            foreach (var bucket in UsageHistoryStore.Read(path, window))
+            {
+                send += bucket.NetSend;
+                recv += bucket.NetRecv;
+                read += bucket.DiskRead;
+                write += bucket.DiskWrite;
+            }
+
+            if (send != 1005 || recv != 2006 || read != 3000 || write != 4000)
+                failures.Add($"History buckets were {send}/{recv}/{read}/{write}, expected 1005/2006/3000/4000.");
+
+            var at = new DateTime(2026, 6, 15, 12, 30, 45);
+            ExpectWindow(failures, UsageRange.Minutes15, at, 60, 15, 17, "15 min");
+            ExpectWindow(failures, UsageRange.Hour, at, 60, 60, 62, "1 hour");
+            ExpectWindow(failures, UsageRange.Hours5, at, 300, 300, 306, "5 hours");
+            var day = UsageHistoryStore.Resolve(UsageRange.Day, at, null, null);
+            if (day.BucketSeconds != 900 || day.LocalStart.Date != at.Date)
+                failures.Add("Day should stay on today with 15-minute buckets.");
+            if (UsageHistoryStore.Resolve(UsageRange.Week, at, null, null).BucketSeconds != 3600)
+                failures.Add("Week should stay on hourly buckets.");
+            if (UsageHistoryStore.Resolve(UsageRange.Month, at, null, null).BucketSeconds != 86_400)
+                failures.Add("Month should stay on daily buckets.");
+            if (UsageHistoryStore.Resolve(UsageRange.Year, at, null, null).BucketSeconds != 86_400)
+                failures.Add("Year should stay on daily buckets.");
+            var custom = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-1), at.Date);
+            if (custom.BucketSeconds != 900)
+                failures.Add("Custom ranges up to two days should stay on 15-minute buckets.");
+        }
+        catch (Exception ex)
+        {
+            failures.Add("History store failed: " + ex.Message);
+        }
+        finally
+        {
+            foreach (string suffix in new[] { "", "-wal", "-shm" })
+            {
+                try { if (File.Exists(path + suffix)) File.Delete(path + suffix); } catch { /* temp cleanup */ }
+            }
+        }
     }
 
     private static void AssertUsageAndSize(List<string> failures)
@@ -211,7 +375,9 @@ internal static class SettingsSelfTest
             failures.Add($"One and two busiest cells should share one row. {one.Height} vs {two.Height}.");
 
         using var detailFont = new Font("Segoe UI", 16f, FontStyle.Regular, GraphicsUnit.Point);
-        float line = detailFont.GetHeight(96f);
+        using var probe = new Bitmap(1, 1);
+        using var pg = Graphics.FromImage(probe);
+        float line = detailFont.GetHeight(pg);
         int rowDelta = six.Height - two.Height;
         if (rowDelta < line * 1.4f)
             failures.Add($"Six cells should add two rows, grew only {rowDelta}px.");
@@ -351,8 +517,94 @@ internal static class SettingsSelfTest
                 failures.Add($"Metric switches should match the other settings switches ({state}): {switches[0].Size} vs {shared.Size}.");
         }
 
+        AssertCaptionInside(FindLabel(form, "Total usage"), failures, state);
         AssertCaptionInside(FindLabel(form, "Hide when idle"), failures, state);
         AssertCaptionInside(FindLabel(form, "Show"), failures, state);
+
+        foreach (string label in new[] { "Network history", "Disk history" })
+        {
+            var historySwitch = FindLabel(form, label);
+            if (historySwitch == null || !PageHasTitle(historySwitch, "Monitoring"))
+                failures.Add($"{label} should sit on Monitoring ({state}).");
+        }
+
+        foreach (string item in new[] { "15 min", "1 hour", "5 hours", "Day", "Week", "Month", "Year", "Custom" })
+        {
+            if (FindSegmented(form, item) == null)
+                failures.Add($"Usage history range '{item}' is missing ({state}).");
+        }
+
+        if (FindSegmented(form, "Restart") == null || FindSegmented(form, "Startup") == null)
+            failures.Add($"Total since control is missing ({state}).");
+
+        int historyPlots = 0;
+        foreach (Control control in Enumerate(form))
+        {
+            if (control.GetType().Name == "FormsPlot")
+                historyPlots++;
+        }
+
+        if (historyPlots < 2)
+            failures.Add($"Expected a network chart and a disk chart ({state}), found {historyPlots}.");
+    }
+
+    private static void ExpectWindow(List<string> failures, UsageRange range, DateTime at, int bucket, double minMinutes, double maxMinutes, string name)
+    {
+        var window = UsageHistoryStore.Resolve(range, at, null, null);
+        if (window.BucketSeconds != bucket)
+            failures.Add($"{name} bucket was {window.BucketSeconds}, expected {bucket}.");
+        double span = (window.LocalEnd - window.LocalStart).TotalMinutes;
+        if (span < minMinutes || span > maxMinutes)
+            failures.Add($"{name} span was {span:0.##} minutes.");
+    }
+
+    private static void AssertSession(List<string> failures)
+    {
+        var origin = new ByteTotals(1000, 0, 0, 0);
+        var last = new ByteTotals(1500, 0, 0, 0);
+        var saved = new SessionLedger(10, 20, ByteTotals.Zero, origin, last);
+        if (saved.Display(new ByteTotals(1800, 0, 0, 0)).Send != 800)
+            failures.Add("Startup total should be the bytes since the session origin.");
+
+        var fast = SessionMath.Cross(saved, SessionEdge.Shutdown, false, 10, 30, new ByteTotals(2000, 0, 0, 0));
+        if (fast.Display(new ByteTotals(2000, 0, 0, 0)).Send != 500)
+            failures.Add("Fast startup should start the session from the counter saved at shutdown.");
+
+        var fresh = new ByteTotals(40, 0, 0, 0);
+        if (SessionMath.Cross(saved, SessionEdge.Restart, true, 99, 40, fresh).Display(fresh).Send != 40)
+            failures.Add("Restart should start a new session.");
+        if (SessionMath.Cross(saved, SessionEdge.Shutdown, true, 99, 40, fresh).Display(fresh).Send != 40)
+            failures.Add("Shutdown should start a new session.");
+
+        var kept = new ByteTotals(1800, 0, 0, 0);
+        if (SessionMath.Cross(saved, SessionEdge.Hibernate, false, 99, 20, kept).Display(kept).Send != 800)
+            failures.Add("Hibernate should keep the startup total.");
+        if (SessionMath.Cross(saved, SessionEdge.Hibernate, true, 99, 20, fresh).Display(fresh).Send != 540)
+            failures.Add("Hibernate should keep the bytes from before a counter reset.");
+        if (SessionMath.Cross(saved, SessionEdge.Sleep, false, 10, 20, kept).Display(kept).Send != 800)
+            failures.Add("Sleep should keep the startup total.");
+        if (SessionMath.Classify(10, 20, 10, 20, SessionEdge.Same) != SessionEdge.Same)
+            failures.Add("Logout and lock should keep the startup session.");
+        if (SessionMath.Classify(10, 20, 10, 30, SessionEdge.Same) != SessionEdge.Shutdown)
+            failures.Add("Fast startup should count as a shutdown.");
+        if (SessionMath.Classify(10, 20, 99, 40, SessionEdge.Same) != SessionEdge.Restart)
+            failures.Add("An unclassified new boot should start a new session.");
+        if (SessionMath.Fold([SessionEdge.Sleep]) != SessionEdge.Same)
+            failures.Add("A sleep event should not clear the session.");
+        if (SessionMath.Fold([SessionEdge.Hibernate]) != SessionEdge.Hibernate)
+            failures.Add("Hibernate should be recognized.");
+        if (SessionMath.Fold([SessionEdge.Restart]) != SessionEdge.Restart)
+            failures.Add("Restart should be recognized.");
+        if (SessionMath.Fold([SessionEdge.Shutdown]) != SessionEdge.Shutdown)
+            failures.Add("Shutdown should be recognized.");
+        if (SessionMath.Fold([SessionEdge.Restart, SessionEdge.Hibernate]) != SessionEdge.Restart)
+            failures.Add("Hibernate after a restart should not restore the previous session.");
+
+        ulong big = 10_000_000;
+        if (!SessionMath.CountersReset(new ByteTotals(big, big, big, big), new ByteTotals(10, 10, 10, 10)))
+            failures.Add("A fresh boot should count as a counter reset.");
+        if (SessionMath.CountersReset(new ByteTotals(big, big, big, big), new ByteTotals(big + 100, big, big, big)))
+            failures.Add("Growing counters are not a reset.");
     }
 
     private static void AssertCaptionInside(Label? caption, List<string> failures, string state)

@@ -8,6 +8,8 @@ internal sealed class MetricsHub : IDisposable
     private readonly DiskCollector _disk = new();
     private readonly GpuCollector _gpu = new();
     private readonly NpuCollector _npu = new();
+    private readonly UsageHistoryStore? _history;
+    private readonly StartupSessionStore? _session;
     private readonly System.Threading.Timer _timer;
     private readonly SynchronizationContext? _ui;
     private readonly object _gate = new();
@@ -18,6 +20,9 @@ internal sealed class MetricsHub : IDisposable
     private long _pausedAt;
     private int _intervalMs;
     private MetricsSnapshot _latest = MetricsSnapshot.Empty;
+    private bool _hasSend, _hasRecv, _hasRead, _hasWrite;
+    private ulong _prevSend, _prevRecv, _prevRead, _prevWrite;
+    private ulong _shownSend, _shownRecv, _shownRead, _shownWrite;
 
     public event Action<MetricsSnapshot>? Updated;
 
@@ -30,8 +35,28 @@ internal sealed class MetricsHub : IDisposable
     {
         _ui = SynchronizationContext.Current;
         _intervalMs = Math.Clamp(intervalMs, 100, 10_000);
+        try
+        {
+            _history = new UsageHistoryStore();
+        }
+        catch
+        {
+            _history = null;
+        }
+
+        try
+        {
+            _session = new StartupSessionStore();
+        }
+        catch
+        {
+            _session = null;
+        }
         _timer = new System.Threading.Timer(_ => Collect(), null, Timeout.Infinite, _intervalMs);
     }
+
+    /// <summary>Records upload and download while the network history block is on.</summary>
+    public void SetHistoryRecording(bool network, bool disk) => _history?.SetRecording(network, disk);
 
     public int IntervalMs
     {
@@ -66,6 +91,8 @@ internal sealed class MetricsHub : IDisposable
         _paused = true;
         _pausedAt = Environment.TickCount64;
         _timer.Change(Timeout.Infinite, Timeout.Infinite);
+        _history?.Flush();
+        NoteSession(force: true);
     }
 
     public bool IsPaused => _paused;
@@ -91,10 +118,18 @@ internal sealed class MetricsHub : IDisposable
                 // zeros and would blank numbers the UI is already showing.
                 _ = _cpu.Sample();
                 _ = _memory.Sample();
-                _ = _network.Sample();
-                _ = _disk.Sample();
+                var primedNet = _network.Sample();
+                var primedDisk = _disk.Sample();
                 _ = _gpu.Sample();
                 _ = _npu.Sample();
+                // Drop the gap while sampling was paused. The next sample only
+                // counts bytes after this baseline, so a closed hour stays zero.
+                _hasSend = _hasRecv = _hasRead = _hasWrite = false;
+                Observe(primedNet.TotalsValid, primedNet.SendBytes, ref _hasSend, ref _prevSend, ref _shownSend);
+                Observe(primedNet.TotalsValid, primedNet.RecvBytes, ref _hasRecv, ref _prevRecv, ref _shownRecv);
+                Observe(primedDisk.TotalsValid, primedDisk.ReadBytes, ref _hasRead, ref _prevRead, ref _shownRead);
+                Observe(primedDisk.TotalsValid, primedDisk.WriteBytes, ref _hasWrite, ref _prevWrite, ref _shownWrite);
+                NoteSession(force: true);
                 if (!_paused)
                     _timer.Change(300, _intervalMs);
                 return;
@@ -102,8 +137,15 @@ internal sealed class MetricsHub : IDisposable
 
             var (cpu, cores) = _cpu.Sample();
             var (memUsed, memTotal, memPct) = _memory.Sample();
-            var (send, recv) = _network.Sample();
-            var (diskR, diskW) = _disk.Sample();
+            var net = _network.Sample();
+            var disk = _disk.Sample();
+            ulong dSend = Observe(net.TotalsValid, net.SendBytes, ref _hasSend, ref _prevSend, ref _shownSend);
+            ulong dRecv = Observe(net.TotalsValid, net.RecvBytes, ref _hasRecv, ref _prevRecv, ref _shownRecv);
+            ulong dRead = Observe(disk.TotalsValid, disk.ReadBytes, ref _hasRead, ref _prevRead, ref _shownRead);
+            ulong dWrite = Observe(disk.TotalsValid, disk.WriteBytes, ref _hasWrite, ref _prevWrite, ref _shownWrite);
+            _history?.Add(DateTime.UtcNow, dSend, dRecv, dRead, dWrite);
+            NoteSession(force: false);
+            ByteTotals startup = StartupTotals();
             var (gpu, vramUsed, vramTotal, vramPct, engines) = _gpu.Sample();
             NpuReading npu = _npu.Sample();
 
@@ -127,10 +169,18 @@ internal sealed class MetricsHub : IDisposable
                 NpuMemoryUsedBytes = npu.UsedBytes,
                 NpuMemoryTotalBytes = npu.TotalBytes,
                 NpuMemoryPercent = CeilPercent(npuMemPct),
-                NetSendBytesPerSec = send,
-                NetRecvBytesPerSec = recv,
-                DiskReadBytesPerSec = diskR,
-                DiskWriteBytesPerSec = diskW,
+                NetSendBytesPerSec = net.SendBps,
+                NetRecvBytesPerSec = net.RecvBps,
+                NetSendTotalBytes = _shownSend,
+                NetRecvTotalBytes = _shownRecv,
+                NetSendStartupBytes = startup.Send,
+                NetRecvStartupBytes = startup.Recv,
+                DiskReadBytesPerSec = disk.ReadBps,
+                DiskWriteBytesPerSec = disk.WriteBps,
+                DiskReadTotalBytes = _shownRead,
+                DiskWriteTotalBytes = _shownWrite,
+                DiskReadStartupBytes = startup.Read,
+                DiskWriteStartupBytes = startup.Write,
                 Timestamp = DateTime.UtcNow
             };
 
@@ -166,10 +216,56 @@ internal sealed class MetricsHub : IDisposable
     {
         _paused = true;
         _timer.Dispose();
+        _session?.Dispose();
+        _history?.Dispose();
         _disk.Dispose();
         _gpu.Dispose();
         _npu.Dispose();
         _cpu.Dispose();
+    }
+
+    /// <summary>
+    /// First valid reading becomes the baseline and is not stored.
+    /// A counter that steps backwards (adapter reset) contributes nothing
+    /// and the displayed total stays at the last higher value.
+    /// </summary>
+    private static ulong Observe(bool valid, ulong current, ref bool has, ref ulong prev, ref ulong shown)
+    {
+        if (!valid)
+            return 0;
+        if (!has)
+        {
+            has = true;
+            prev = current;
+            if (current > shown)
+                shown = current;
+            return 0;
+        }
+
+        ulong delta = current >= prev ? current - prev : 0;
+        prev = current;
+        if (current > shown)
+            shown = current;
+        return delta;
+    }
+
+    private ByteTotals ShownTotals() => new(_shownSend, _shownRecv, _shownRead, _shownWrite);
+
+    /// <summary>
+    /// Wait for a real counter read. A zero sample before that would look like a
+    /// reset and would throw away a fast-startup session.
+    /// </summary>
+    private void NoteSession(bool force)
+    {
+        if (_session == null || (!_hasSend && !_hasRecv && !_hasRead && !_hasWrite))
+            return;
+        _session.Observe(ShownTotals(), force);
+    }
+
+    private ByteTotals StartupTotals()
+    {
+        ByteTotals shown = ShownTotals();
+        return _session?.Display(shown) ?? shown;
     }
 
     /// <summary>Whole percent, half away from zero, matching Task Manager.</summary>

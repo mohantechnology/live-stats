@@ -25,9 +25,31 @@ internal sealed class MetricsSnapshot
     public double NpuMemoryPercent { get; init; }
     public double NetSendBytesPerSec { get; init; }
     public double NetRecvBytesPerSec { get; init; }
+    public ulong NetSendTotalBytes { get; init; }
+    public ulong NetRecvTotalBytes { get; init; }
+    public ulong NetSendStartupBytes { get; init; }
+    public ulong NetRecvStartupBytes { get; init; }
     public double DiskReadBytesPerSec { get; init; }
     public double DiskWriteBytesPerSec { get; init; }
+    public ulong DiskReadTotalBytes { get; init; }
+    public ulong DiskWriteTotalBytes { get; init; }
+    public ulong DiskReadStartupBytes { get; init; }
+    public ulong DiskWriteStartupBytes { get; init; }
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 
     public static MetricsSnapshot Empty { get; } = new();
 }
+
+internal readonly record struct NetworkReading(
+    double SendBps,
+    double RecvBps,
+    ulong SendBytes,
+    ulong RecvBytes,
+    bool TotalsValid);
+
+internal readonly record struct DiskReading(
+    double ReadBps,
+    double WriteBps,
+    ulong ReadBytes,
+    ulong WriteBytes,
+    bool TotalsValid);

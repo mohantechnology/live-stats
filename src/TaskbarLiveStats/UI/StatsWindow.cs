@@ -118,6 +118,8 @@ internal sealed class StatsWindow : Form
             _settings.Metrics.Npu != settings.Metrics.Npu ||
             _settings.Metrics.NpuMemory != settings.Metrics.NpuMemory ||
             !_settings.HideWhenIdle.SameAs(settings.HideWhenIdle) ||
+            !(_settings.TotalUsage ?? new TotalUsageToggles()).SameAs(settings.TotalUsage ?? new TotalUsageToggles()) ||
+            _settings.TotalSince != settings.TotalSince ||
             _settings.ShowUsageDetails != settings.ShowUsageDetails ||
             _settings.UsageDetailCount != settings.UsageDetailCount;
         bool hideIdleChanged = !_settings.HideWhenIdle.SameAs(settings.HideWhenIdle);

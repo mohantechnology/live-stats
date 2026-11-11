@@ -30,6 +30,15 @@ internal enum RateUnit
     Bits
 }
 
+/// <summary>Which byte total the live bar shows for upload, download, and disk.</summary>
+internal enum TotalSince
+{
+    /// <summary>Bytes since the last reboot. This is the OS counter.</summary>
+    Restart,
+    /// <summary>Bytes since the PC last came back from a shutdown or a restart.</summary>
+    Startup
+}
+
 internal enum OverlayDensity
 {
     Default,
@@ -122,6 +131,33 @@ internal sealed class IdleHideToggles
             && DiskWrite == other.DiskWrite
             && Npu == other.Npu
             && NpuMemory == other.NpuMemory;
+    }
+}
+
+/// <summary>Show the since-boot byte total on a live rate item.</summary>
+internal sealed class TotalUsageToggles
+{
+    public bool NetSend { get; set; } = true;
+    public bool NetRecv { get; set; } = true;
+    public bool DiskRead { get; set; } = true;
+    public bool DiskWrite { get; set; } = true;
+
+    public TotalUsageToggles Clone() => new()
+    {
+        NetSend = NetSend,
+        NetRecv = NetRecv,
+        DiskRead = DiskRead,
+        DiskWrite = DiskWrite
+    };
+
+    public bool SameAs(TotalUsageToggles? other)
+    {
+        if (other is null)
+            return false;
+        return NetSend == other.NetSend
+            && NetRecv == other.NetRecv
+            && DiskRead == other.DiskRead
+            && DiskWrite == other.DiskWrite;
     }
 }
 
@@ -362,6 +398,21 @@ internal sealed class AppSettings
 
     public IdleHideToggles HideWhenIdle { get; set; } = new();
 
+    /// <summary>Since-boot totals on upload, download, disk read, and disk write. Default on.</summary>
+    public TotalUsageToggles TotalUsage { get; set; } = new();
+
+    /// <summary>Restart keeps the OS since-reboot counter. Startup is one session that clears on shutdown and restart.</summary>
+    public TotalSince TotalSince { get; set; } = TotalSince.Restart;
+
+    /// <summary>Legacy combined switch. Copied onto the network and disk switches when those keys are absent.</summary>
+    public bool SaveUsageHistory { get; set; } = true;
+
+    /// <summary>Record and chart upload and download. Default on.</summary>
+    public bool SaveNetworkHistory { get; set; } = true;
+
+    /// <summary>Record and chart disk read and disk write. Default on.</summary>
+    public bool SaveDiskHistory { get; set; } = true;
+
     public bool HotkeyEnabled { get; set; } = true;
     /// <summary>Win32 MOD_* flags. Default Win+Ctrl.</summary>
     public int HotkeyModifiers { get; set; } = HotkeyDefaults.Modifiers;
@@ -412,6 +463,11 @@ internal sealed class AppSettings
         ShowUsageDetails = ShowUsageDetails,
         HideIdleMetrics = HideIdleMetrics,
         HideWhenIdle = (HideWhenIdle ?? new IdleHideToggles()).Clone(),
+        TotalUsage = (TotalUsage ?? new TotalUsageToggles()).Clone(),
+        TotalSince = TotalSince,
+        SaveUsageHistory = SaveNetworkHistory || SaveDiskHistory,
+        SaveNetworkHistory = SaveNetworkHistory,
+        SaveDiskHistory = SaveDiskHistory,
         HotkeyEnabled = HotkeyEnabled,
         HotkeyModifiers = HotkeyModifiers,
         HotkeyVirtualKey = HotkeyVirtualKey,

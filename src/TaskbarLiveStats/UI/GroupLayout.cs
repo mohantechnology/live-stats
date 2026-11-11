@@ -26,7 +26,8 @@ internal readonly record struct MetricBlock(
     string Value,
     string Label,
     DetailGroup? Details = null,
-    double? LoadPercent = null);
+    double? LoadPercent = null,
+    string? LabelReserve = null);
 
 /// <summary>Where a taller block sits in the taskbar slot. Extra rows grow away from the screen edge.</summary>
 internal enum DetailAnchor
@@ -85,6 +86,9 @@ internal static class GroupLayout
         bool useBits = settings.RateUnit == RateUnit.Bits;
 
         var ceilings = settings.RateCeilings ?? new RateCeilings();
+        var totals = settings.TotalUsage ?? new TotalUsageToggles();
+        ulong Pick(ulong sinceRestart, ulong sinceStartup) =>
+            settings.TotalSince == TotalSince.Startup ? sinceStartup : sinceRestart;
 
         bool showCpu = Keep(MetricKind.Cpu, m.Cpu, s.CpuPercent <= 0, hide.Cpu, idleWatches, advanceIdleWatch);
         if (showCpu)
@@ -140,34 +144,34 @@ internal static class GroupLayout
 
         if (Keep(MetricKind.NetSend, m.NetSend, s.NetSendBytesPerSec < 1, hide.NetSend, idleWatches, advanceIdleWatch))
         {
-            var (val, unit) = FormatRateParts(s.NetSendBytesPerSec, useBits);
-            list.Add(new MetricBlock(
-                MetricKind.NetSend, IconNetwork, $"{val} {unit}", "Upload",
-                null, RateCeilings.LoadPercent(s.NetSendBytesPerSec, ceilings.NetSendBytesPerSec)));
+            list.Add(RateBlock(
+                MetricKind.NetSend, IconNetwork, "Upload",
+                s.NetSendBytesPerSec, Pick(s.NetSendTotalBytes, s.NetSendStartupBytes), totals.NetSend, useBits,
+                RateCeilings.LoadPercent(s.NetSendBytesPerSec, ceilings.NetSendBytesPerSec)));
         }
 
         if (Keep(MetricKind.NetRecv, m.NetRecv, s.NetRecvBytesPerSec < 1, hide.NetRecv, idleWatches, advanceIdleWatch))
         {
-            var (val, unit) = FormatRateParts(s.NetRecvBytesPerSec, useBits);
-            list.Add(new MetricBlock(
-                MetricKind.NetRecv, IconNetwork, $"{val} {unit}", "Download",
-                null, RateCeilings.LoadPercent(s.NetRecvBytesPerSec, ceilings.NetRecvBytesPerSec)));
+            list.Add(RateBlock(
+                MetricKind.NetRecv, IconNetwork, "Download",
+                s.NetRecvBytesPerSec, Pick(s.NetRecvTotalBytes, s.NetRecvStartupBytes), totals.NetRecv, useBits,
+                RateCeilings.LoadPercent(s.NetRecvBytesPerSec, ceilings.NetRecvBytesPerSec)));
         }
 
         if (Keep(MetricKind.DiskRead, m.DiskRead, s.DiskReadBytesPerSec < 1, hide.DiskRead, idleWatches, advanceIdleWatch))
         {
-            var (val, unit) = FormatRateParts(s.DiskReadBytesPerSec, useBits);
-            list.Add(new MetricBlock(
-                MetricKind.DiskRead, IconDisk, $"{val} {unit}", "Disk read",
-                null, RateCeilings.LoadPercent(s.DiskReadBytesPerSec, ceilings.DiskReadBytesPerSec)));
+            list.Add(RateBlock(
+                MetricKind.DiskRead, IconDisk, "Disk read",
+                s.DiskReadBytesPerSec, Pick(s.DiskReadTotalBytes, s.DiskReadStartupBytes), totals.DiskRead, useBits,
+                RateCeilings.LoadPercent(s.DiskReadBytesPerSec, ceilings.DiskReadBytesPerSec)));
         }
 
         if (Keep(MetricKind.DiskWrite, m.DiskWrite, s.DiskWriteBytesPerSec < 1, hide.DiskWrite, idleWatches, advanceIdleWatch))
         {
-            var (val, unit) = FormatRateParts(s.DiskWriteBytesPerSec, useBits);
-            list.Add(new MetricBlock(
-                MetricKind.DiskWrite, IconDisk, $"{val} {unit}", "Disk write",
-                null, RateCeilings.LoadPercent(s.DiskWriteBytesPerSec, ceilings.DiskWriteBytesPerSec)));
+            list.Add(RateBlock(
+                MetricKind.DiskWrite, IconDisk, "Disk write",
+                s.DiskWriteBytesPerSec, Pick(s.DiskWriteTotalBytes, s.DiskWriteStartupBytes), totals.DiskWrite, useBits,
+                RateCeilings.LoadPercent(s.DiskWriteBytesPerSec, ceilings.DiskWriteBytesPerSec)));
         }
 
         if (list.Count == 0)
@@ -310,13 +314,42 @@ internal static class GroupLayout
     public static string Tooltip(MetricsSnapshot s, AppSettings? settings = null)
     {
         bool useBits = settings?.RateUnit == RateUnit.Bits;
+        var totals = settings?.TotalUsage ?? new TotalUsageToggles();
+        bool showTotals = settings?.TotalUsage != null;
+        bool startup = settings?.TotalSince == TotalSince.Startup;
+        ulong Pick(ulong sinceRestart, ulong sinceStartup) => startup ? sinceStartup : sinceRestart;
         string npuLine = s.NpuPresent
             ? string.Create(CultureInfo.InvariantCulture,
                 $"NPU {UpperPercent(s.NpuPercent)}%  NPU memory {FormatGiB(s.NpuMemoryUsedBytes)} / {FormatGiB(s.NpuMemoryTotalBytes)}\n")
             : "";
+        string upload = WithTotal(FormatRate(s.NetSendBytesPerSec, useBits), showTotals && totals.NetSend, Pick(s.NetSendTotalBytes, s.NetSendStartupBytes));
+        string download = WithTotal(FormatRate(s.NetRecvBytesPerSec, useBits), showTotals && totals.NetRecv, Pick(s.NetRecvTotalBytes, s.NetRecvStartupBytes));
+        string read = WithTotal(FormatRate(s.DiskReadBytesPerSec, useBits), showTotals && totals.DiskRead, Pick(s.DiskReadTotalBytes, s.DiskReadStartupBytes));
+        string write = WithTotal(FormatRate(s.DiskWriteBytesPerSec, useBits), showTotals && totals.DiskWrite, Pick(s.DiskWriteTotalBytes, s.DiskWriteStartupBytes));
         return string.Create(CultureInfo.InvariantCulture,
-            $"CPU {UpperPercent(s.CpuPercent)}%\nMemory {FormatGiB(s.MemoryUsedBytes)} / {FormatGiB(s.MemoryTotalBytes)} ({UpperPercent(s.MemoryPercent)}%)\nGPU {UpperPercent(s.GpuPercent)}%\nGPU memory {FormatGiB(s.VramUsedBytes)} / {FormatGiB(s.VramTotalBytes)}\n{npuLine}Upload {FormatRate(s.NetSendBytesPerSec, useBits)}  Download {FormatRate(s.NetRecvBytesPerSec, useBits)}\nDisk read {FormatRate(s.DiskReadBytesPerSec, useBits)}  Disk write {FormatRate(s.DiskWriteBytesPerSec, useBits)}");
+            $"CPU {UpperPercent(s.CpuPercent)}%\nMemory {FormatGiB(s.MemoryUsedBytes)} / {FormatGiB(s.MemoryTotalBytes)} ({UpperPercent(s.MemoryPercent)}%)\nGPU {UpperPercent(s.GpuPercent)}%\nGPU memory {FormatGiB(s.VramUsedBytes)} / {FormatGiB(s.VramTotalBytes)}\n{npuLine}Upload {upload}  Download {download}\nDisk read {read}  Disk write {write}");
     }
+
+    /// <summary>1024-based byte volume. Independent of the Bits/s rate unit.</summary>
+    public static string FormatVolume(double bytes)
+    {
+        if (double.IsNaN(bytes) || bytes <= 0)
+            return "0 B";
+        double v = bytes;
+        int unit = 0;
+        while (v >= 1024 && unit < VolumeUnits.Length - 1)
+        {
+            v /= 1024;
+            unit++;
+        }
+
+        string number = unit == 0 || v >= 100
+            ? v.ToString("0", CultureInfo.InvariantCulture)
+            : v.ToString("0.0", CultureInfo.InvariantCulture);
+        return number + " " + VolumeUnits[unit];
+    }
+
+    public static string FormatVolume(ulong bytes) => FormatVolume((double)bytes);
 
     /// <summary>Stable placeholder used to size blocks so the overlay does not jitter.</summary>
     public static string ReserveValue(MetricKind kind) => kind switch
@@ -395,6 +428,48 @@ internal static class GroupLayout
         if (n >= 10) return string.Create(CultureInfo.InvariantCulture, $"{n:0.0}");
         return string.Create(CultureInfo.InvariantCulture, $"{n:0.0}");
     }
+
+    private static readonly string[] VolumeUnits = ["B", "KB", "MB", "GB", "TB"];
+
+    private static MetricBlock RateBlock(
+        MetricKind kind,
+        string icon,
+        string name,
+        double bytesPerSec,
+        ulong totalBytes,
+        bool showTotal,
+        bool useBits,
+        double? load)
+    {
+        var (val, unit) = FormatRateParts(bytesPerSec, useBits);
+        string label = name;
+        string? reserve = null;
+        if (showTotal)
+        {
+            label = name + "  " + FormatVolume(totalBytes);
+            reserve = name + "  " + VolumeReserve(totalBytes);
+        }
+
+        return new MetricBlock(kind, icon, $"{val} {unit}", label, null, load, reserve);
+    }
+
+    /// <summary>Same unit as the live total, wide enough that digit changes do not resize the block.</summary>
+    private static string VolumeReserve(ulong bytes)
+    {
+        double v = bytes;
+        int unit = 0;
+        while (v >= 1024 && unit < VolumeUnits.Length - 1)
+        {
+            v /= 1024;
+            unit++;
+        }
+
+        string number = unit == 0 ? "8888" : "888.8";
+        return number + " " + VolumeUnits[unit];
+    }
+
+    private static string WithTotal(string rate, bool show, ulong total) =>
+        show ? rate + " (" + FormatVolume(total) + ")" : rate;
 
     private static string FormatRate(double bytesPerSec, bool useBits)
     {

@@ -373,7 +373,9 @@ internal sealed class StatsRenderer : IDisposable
         bool compact)
     {
         string reserveValue = GroupLayout.ReserveValue(block.Kind);
-        string reserveLabel = GroupLayout.ReserveLabel(block.Kind);
+        string reserveLabel = string.IsNullOrEmpty(block.LabelReserve)
+            ? GroupLayout.ReserveLabel(block.Kind)
+            : block.LabelReserve;
         LineBox value = MeasureLine(g, block.Value, valueFont);
         LineBox valueReserve = MeasureLine(g, reserveValue, valueFont);
         LineBox label = MeasureLine(g, block.Label, labelFont);

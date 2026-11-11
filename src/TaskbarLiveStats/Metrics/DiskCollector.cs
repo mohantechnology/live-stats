@@ -36,22 +36,39 @@ internal sealed class DiskCollector : IDisposable
         }
     }
 
-    public (double ReadBps, double WriteBps) Sample()
+    public DiskReading Sample()
     {
-        if (!_ready) return (0, 0);
+        if (!_ready)
+            return default;
 
         if (NativeMethods.PdhCollectQueryData(_query) != 0)
-            return (0, 0);
+            return default;
+
+        bool readOk = TryGetRawTotal(_readCounter, out ulong readBytes);
+        bool writeOk = TryGetRawTotal(_writeCounter, out ulong writeBytes);
+        bool totalsValid = readOk && writeOk;
 
         if (!_primed)
         {
             _primed = true;
-            return (0, 0);
+            return new DiskReading(0, 0, readBytes, writeBytes, totalsValid);
         }
 
         double read = GetDouble(_readCounter);
         double write = GetDouble(_writeCounter);
-        return (Math.Max(0, read), Math.Max(0, write));
+        return new DiskReading(Math.Max(0, read), Math.Max(0, write), readBytes, writeBytes, totalsValid);
+    }
+
+    private static bool TryGetRawTotal(IntPtr counter, out ulong total)
+    {
+        total = 0;
+        if (NativeMethods.PdhGetRawCounterValue(counter, IntPtr.Zero, out var raw) != 0)
+            return false;
+        // High bit set means a PDH error status, not a usable count.
+        if ((raw.CStatus & 0x80000000) != 0 || raw.FirstValue < 0)
+            return false;
+        total = (ulong)raw.FirstValue;
+        return true;
     }
 
     private static double GetDouble(IntPtr counter)

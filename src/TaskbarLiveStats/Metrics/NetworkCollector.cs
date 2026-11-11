@@ -4,7 +4,7 @@ namespace TaskbarLiveStats.Metrics;
 
 /// <summary>
 /// Network up/down rates via Windows IP statistics (NetworkInterface → IP Helper).
-/// Excludes loopback and down adapters.
+/// Excludes loopback. Down adapters stay in the total so a disconnect does not drop it.
 /// </summary>
 internal sealed class NetworkCollector
 {
@@ -13,10 +13,10 @@ internal sealed class NetworkCollector
     private long _prevTicks;
     private bool _hasPrev;
 
-    public (double SendBps, double RecvBps) Sample()
+    public NetworkReading Sample()
     {
         if (!TryReadTotals(out ulong inOctets, out ulong outOctets))
-            return (0, 0);
+            return default;
 
         long now = Environment.TickCount64;
         if (!_hasPrev)
@@ -25,7 +25,7 @@ internal sealed class NetworkCollector
             _prevOut = outOctets;
             _prevTicks = now;
             _hasPrev = true;
-            return (0, 0);
+            return new NetworkReading(0, 0, outOctets, inOctets, true);
         }
 
         double elapsedSec = Math.Max((now - _prevTicks) / 1000.0, 0.001);
@@ -36,7 +36,7 @@ internal sealed class NetworkCollector
         _prevOut = outOctets;
         _prevTicks = now;
 
-        return (send, recv);
+        return new NetworkReading(send, recv, outOctets, inOctets, true);
     }
 
     public void Reset() => _hasPrev = false;
@@ -48,19 +48,28 @@ internal sealed class NetworkCollector
 
         try
         {
+            int read = 0;
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
                     continue;
-                if (nic.OperationalStatus != OperationalStatus.Up)
-                    continue;
 
-                var stats = nic.GetIPStatistics();
-                inOctets += (ulong)Math.Max(0, stats.BytesReceived);
-                outOctets += (ulong)Math.Max(0, stats.BytesSent);
+                try
+                {
+                    // Down adapters still hold their since-boot totals. Skipping them
+                    // would make the sum fall the moment Wi-Fi blips.
+                    var stats = nic.GetIPStatistics();
+                    inOctets += (ulong)Math.Max(0, stats.BytesReceived);
+                    outOctets += (ulong)Math.Max(0, stats.BytesSent);
+                    read++;
+                }
+                catch
+                {
+                    // This adapter is not reporting statistics.
+                }
             }
 
-            return true;
+            return read > 0;
         }
         catch
         {

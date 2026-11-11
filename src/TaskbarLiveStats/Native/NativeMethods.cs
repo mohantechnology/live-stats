@@ -328,6 +328,9 @@ internal static class NativeMethods
     [DllImport("pdh.dll")]
     public static extern uint PdhGetFormattedCounterValue(IntPtr hCounter, uint dwFormat, IntPtr lpdwType, out PdhFmtCounterValue pValue);
 
+    [DllImport("pdh.dll")]
+    public static extern uint PdhGetRawCounterValue(IntPtr hCounter, IntPtr lpdwType, out PdhRawCounter pValue);
+
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
     public static extern uint PdhGetFormattedCounterArray(
         IntPtr hCounter,
