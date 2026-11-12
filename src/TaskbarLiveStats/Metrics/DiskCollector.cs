@@ -2,6 +2,11 @@ using TaskbarLiveStats.Native;
 
 namespace TaskbarLiveStats.Metrics;
 
+/// <summary>
+/// Disk read/write via PDH PhysicalDisk(_Total) Bytes/sec.
+/// PDH computes the rate from consecutive collects using the real sample gap,
+/// so changing the UI refresh interval does not require manual delta math.
+/// </summary>
 internal sealed class DiskCollector : IDisposable
 {
     private IntPtr _query;
@@ -9,6 +14,8 @@ internal sealed class DiskCollector : IDisposable
     private IntPtr _writeCounter;
     private bool _ready;
     private bool _primed;
+    private double _lastRead;
+    private double _lastWrite;
 
     public DiskCollector()
     {
@@ -42,7 +49,7 @@ internal sealed class DiskCollector : IDisposable
             return default;
 
         if (NativeMethods.PdhCollectQueryData(_query) != 0)
-            return default;
+            return new DiskReading(_lastRead, _lastWrite, 0, 0, false);
 
         bool readOk = TryGetRawTotal(_readCounter, out ulong readBytes);
         bool writeOk = TryGetRawTotal(_writeCounter, out ulong writeBytes);
@@ -54,9 +61,11 @@ internal sealed class DiskCollector : IDisposable
             return new DiskReading(0, 0, readBytes, writeBytes, totalsValid);
         }
 
-        double read = GetDouble(_readCounter);
-        double write = GetDouble(_writeCounter);
-        return new DiskReading(Math.Max(0, read), Math.Max(0, write), readBytes, writeBytes, totalsValid);
+        double read = ReadRate(_readCounter, _lastRead);
+        double write = ReadRate(_writeCounter, _lastWrite);
+        _lastRead = read;
+        _lastWrite = write;
+        return new DiskReading(read, write, readBytes, writeBytes, totalsValid);
     }
 
     private static bool TryGetRawTotal(IntPtr counter, out ulong total)
@@ -71,11 +80,12 @@ internal sealed class DiskCollector : IDisposable
         return true;
     }
 
-    private static double GetDouble(IntPtr counter)
+    private static double ReadRate(IntPtr counter, double fallback)
     {
-        if (NativeMethods.PdhGetFormattedCounterValue(counter, NativeMethods.PDH_FMT_DOUBLE, IntPtr.Zero, out var value) != 0)
-            return 0;
-        return value.DoubleValue;
+        double value = PdhReader.ReadDouble(counter);
+        if (double.IsNaN(value))
+            return fallback;
+        return Math.Max(0, value);
     }
 
     public void Reset()

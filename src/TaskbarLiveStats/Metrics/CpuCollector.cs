@@ -4,16 +4,16 @@ using TaskbarLiveStats.Native;
 namespace TaskbarLiveStats.Metrics;
 
 /// <summary>
-/// Headline CPU is % Processor Utility (Task Manager's Performance number).
-/// Logical processors are % Processor Time, which is what the per-core squares show.
+/// Headline and per-core CPU use % Processor Time — the metric Task Manager
+/// Performance / modern Processes tabs align with (busy time ÷ elapsed × cores).
 /// </summary>
 internal sealed class CpuCollector : IDisposable
 {
     private IntPtr _query;
-    private IntPtr _utilityCounter;
-    private IntPtr _timeCounter;
-    private bool _utilityReady;
-    private bool _timeReady;
+    private IntPtr _totalCounter;
+    private IntPtr _coreCounter;
+    private bool _totalReady;
+    private bool _coresReady;
     private bool _primed;
     private double _lastPercent;
     private CoreUsage[] _lastCores = [];
@@ -31,19 +31,19 @@ internal sealed class CpuCollector : IDisposable
             return;
         }
 
-        _utilityReady = NativeMethods.PdhAddEnglishCounter(
+        _totalReady = NativeMethods.PdhAddEnglishCounter(
             _query,
-            @"\Processor Information(_Total)\% Processor Utility",
+            @"\Processor Information(_Total)\% Processor Time",
             IntPtr.Zero,
-            out _utilityCounter) == 0;
+            out _totalCounter) == 0;
 
-        _timeReady = NativeMethods.PdhAddEnglishCounter(
+        _coresReady = NativeMethods.PdhAddEnglishCounter(
             _query,
             @"\Processor Information(*)\% Processor Time",
             IntPtr.Zero,
-            out _timeCounter) == 0;
+            out _coreCounter) == 0;
 
-        if (!_utilityReady && !_timeReady)
+        if (!_totalReady && !_coresReady)
         {
             NativeMethods.PdhCloseQuery(_query);
             _query = IntPtr.Zero;
@@ -64,13 +64,13 @@ internal sealed class CpuCollector : IDisposable
         if (!_primed)
         {
             _primed = true;
-            if (!_utilityReady)
+            if (!_totalReady)
                 _lastPercent = SampleTimes();
             return (_lastPercent, _lastCores);
         }
 
-        _lastPercent = _utilityReady ? ReadUtility() : SampleTimes();
-        if (_timeReady)
+        _lastPercent = _totalReady ? ReadTotal() : SampleTimes();
+        if (_coresReady)
             _lastCores = ReadCores();
 
         return (_lastPercent, _lastCores);
@@ -93,15 +93,17 @@ internal sealed class CpuCollector : IDisposable
         }
     }
 
-    private double ReadUtility()
+    private double ReadTotal()
     {
-        double value = PdhReader.ReadDouble(_utilityCounter);
-        return double.IsNaN(value) ? _lastPercent : Math.Max(0, value);
+        double value = PdhReader.ReadDouble(_totalCounter);
+        if (double.IsNaN(value))
+            return _lastPercent;
+        return Math.Clamp(value, 0, 100);
     }
 
     private CoreUsage[] ReadCores()
     {
-        if (!PdhReader.TryReadCounterArray(_timeCounter, out var items))
+        if (!PdhReader.TryReadCounterArray(_coreCounter, out var items))
             return _lastCores;
 
         var best = new Dictionary<int, double>();

@@ -339,6 +339,13 @@ internal static class NativeMethods
         out uint lpdwItemCount,
         IntPtr itemBuffer);
 
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PdhGetRawCounterArray(
+        IntPtr hCounter,
+        ref uint lpdwBufferSize,
+        out uint lpdwItemCount,
+        IntPtr itemBuffer);
+
     [DllImport("pdh.dll")]
     public static extern uint PdhCloseQuery(IntPtr hQuery);
 

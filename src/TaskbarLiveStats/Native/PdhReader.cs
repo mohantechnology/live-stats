@@ -59,4 +59,49 @@ internal static class PdhReader
             Marshal.FreeHGlobal(buffer);
         }
     }
+
+    public static bool TryReadRawCounterArray(IntPtr counter, out List<(string Name, ulong FirstValue)> items)
+    {
+        items = [];
+        if (counter == IntPtr.Zero)
+            return false;
+
+        uint bufSize = 0;
+        uint itemCount = 0;
+        uint status = NativeMethods.PdhGetRawCounterArray(
+            counter, ref bufSize, out itemCount, IntPtr.Zero);
+
+        if (status != NativeMethods.PDH_MORE_DATA && status != 0)
+            return false;
+        if (bufSize == 0)
+            return false;
+
+        IntPtr buffer = Marshal.AllocHGlobal((int)bufSize);
+        try
+        {
+            status = NativeMethods.PdhGetRawCounterArray(
+                counter, ref bufSize, out itemCount, buffer);
+            if (status != 0 || itemCount == 0)
+                return false;
+
+            int stride = Marshal.SizeOf<PdhRawCounterItem>();
+            for (uint i = 0; i < itemCount; i++)
+            {
+                var item = Marshal.PtrToStructure<PdhRawCounterItem>(
+                    IntPtr.Add(buffer, (int)(i * (uint)stride)));
+                if ((item.RawValue.CStatus & 0x80000000) != 0 || item.RawValue.FirstValue < 0)
+                    continue;
+                string name = item.szName != IntPtr.Zero
+                    ? (Marshal.PtrToStringUni(item.szName) ?? string.Empty)
+                    : string.Empty;
+                items.Add((name, (ulong)item.RawValue.FirstValue));
+            }
+
+            return items.Count > 0;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
 }

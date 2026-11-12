@@ -16,6 +16,13 @@ internal struct PdhFmtCounterValueItem
     public PdhFmtCounterValue FmtValue;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct PdhRawCounterItem
+{
+    public IntPtr szName;
+    public PdhRawCounter RawValue;
+}
+
 /// <summary>
 /// Native PDH_RAW_COUNTER. For a bulk-count rate such as Disk Read Bytes/sec,
 /// <see cref="FirstValue"/> is the cumulative count since boot.

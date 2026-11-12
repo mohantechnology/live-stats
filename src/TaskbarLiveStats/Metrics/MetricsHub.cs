@@ -124,7 +124,10 @@ internal sealed class MetricsHub : IDisposable
                 _ = _npu.Sample();
                 // Drop the gap while sampling was paused. The next sample only
                 // counts bytes after this baseline, so a closed hour stays zero.
+                // Clear shown totals so a corrected counter source can replace
+                // an inflated baseline instead of ratcheting forever.
                 _hasSend = _hasRecv = _hasRead = _hasWrite = false;
+                _shownSend = _shownRecv = _shownRead = _shownWrite = 0;
                 Observe(primedNet.TotalsValid, primedNet.SendBytes, ref _hasSend, ref _prevSend, ref _shownSend);
                 Observe(primedNet.TotalsValid, primedNet.RecvBytes, ref _hasRecv, ref _prevRecv, ref _shownRecv);
                 Observe(primedDisk.TotalsValid, primedDisk.ReadBytes, ref _hasRead, ref _prevRead, ref _shownRead);
@@ -218,6 +221,7 @@ internal sealed class MetricsHub : IDisposable
         _timer.Dispose();
         _session?.Dispose();
         _history?.Dispose();
+        _network.Dispose();
         _disk.Dispose();
         _gpu.Dispose();
         _npu.Dispose();
