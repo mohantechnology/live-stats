@@ -76,7 +76,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _tray = new NotifyIcon
         {
             Text = "Taskbar Live Stats",
-            Icon = SystemIcons.Application,
+            Icon = AppIcons.AppIcon,
             Visible = true,
             ContextMenuStrip = _menu
         };

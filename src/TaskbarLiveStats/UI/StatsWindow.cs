@@ -47,6 +47,7 @@ internal sealed class StatsWindow : Form
         AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
+        Icon = AppIcons.AppIcon;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
         Size = _size;

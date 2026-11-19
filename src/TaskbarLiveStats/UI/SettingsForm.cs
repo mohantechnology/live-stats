@@ -108,6 +108,7 @@ internal sealed class SettingsForm : AntdUI.Window
         AntdUI.Config.IsDark = true;
 
         Text = "Taskbar Live Stats — Settings";
+        Icon = AppIcons.AppIcon;
         Resizable = true;
         MinimizeBox = true;
         MaximizeBox = true;
@@ -125,7 +126,7 @@ internal sealed class SettingsForm : AntdUI.Window
             Dock = DockStyle.None,
             Text = "Taskbar Live Stats",
             SubText = "Settings",
-            ShowIcon = false,
+            ShowIcon = true,
             ShowButton = true,
             MinimizeBox = true,
             MaximizeBox = true,
@@ -551,26 +552,42 @@ internal sealed class SettingsForm : AntdUI.Window
         page.Add(PageTitle("About"));
         string ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "1.0.0";
         var card = NewCard();
-        card.Add(new Label
+
+        var brandRow = new Panel
+        {
+            Height = 88,
+            BackColor = BgCard,
+            Padding = new Padding(0, 4, 0, 4)
+        };
+        brandRow.Controls.Add(new PictureBox
+        {
+            Image = AppIcons.Logo,
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Size = new Size(72, 72),
+            Location = new Point(0, 8),
+            BackColor = Color.Transparent
+        });
+        brandRow.Controls.Add(new Label
         {
             Text = "Taskbar Live Stats",
             AutoSize = false,
-            Height = 32,
+            Bounds = new Rectangle(88, 18, 420, 32),
             Font = new Font("Segoe UI Semibold", 14f, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = TextPrimary,
             BackColor = BgCard,
             TextAlign = ContentAlignment.MiddleLeft
         });
-        card.Add(new Label
+        brandRow.Controls.Add(new Label
         {
             Text = $"Version {ver}",
             AutoSize = false,
-            Height = 24,
+            Bounds = new Rectangle(88, 50, 420, 24),
             Font = _bodyFont,
             ForeColor = TextMuted,
             BackColor = BgCard,
             TextAlign = ContentAlignment.MiddleLeft
         });
+        card.Add(brandRow);
         card.Add(Hint("Live CPU, memory, GPU, network, and disk stats on your desktop.", 36));
         page.Add(card);
         return page;
