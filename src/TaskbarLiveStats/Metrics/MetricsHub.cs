@@ -230,8 +230,9 @@ internal sealed class MetricsHub : IDisposable
 
     /// <summary>
     /// First valid reading becomes the baseline and is not stored.
-    /// A counter that steps backwards (adapter reset) contributes nothing
-    /// and the displayed total stays at the last higher value.
+    /// Shown totals always mirror the live since-boot counter so a corrected
+    /// source (for example PDH replacing an inflated IP Helper sum) can drop.
+    /// A step backwards contributes no history delta.
     /// </summary>
     private static ulong Observe(bool valid, ulong current, ref bool has, ref ulong prev, ref ulong shown)
     {
@@ -241,15 +242,13 @@ internal sealed class MetricsHub : IDisposable
         {
             has = true;
             prev = current;
-            if (current > shown)
-                shown = current;
+            shown = current;
             return 0;
         }
 
         ulong delta = current >= prev ? current - prev : 0;
         prev = current;
-        if (current > shown)
-            shown = current;
+        shown = current;
         return delta;
     }
 

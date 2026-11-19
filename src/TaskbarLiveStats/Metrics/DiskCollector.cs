@@ -37,9 +37,8 @@ internal sealed class DiskCollector : IDisposable
         _ready = r1 == 0 && r2 == 0;
         if (_ready)
         {
-            // Rate counters need a priming collect
+            // Rate counters need a priming collect; first Sample() still skips rates.
             NativeMethods.PdhCollectQueryData(_query);
-            _primed = true;
         }
     }
 

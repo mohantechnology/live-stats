@@ -216,6 +216,17 @@ internal static class SettingsSelfTest
         const ulong absurd = 100UL << 40;
         if (reading.TotalsValid && (reading.ReadBytes > absurd || reading.WriteBytes > absurd))
             failures.Add($"Disk since-boot totals look misread: read={reading.ReadBytes} write={reading.WriteBytes}.");
+        if (!reading.TotalsValid)
+            failures.Add("Disk since-boot totals should be readable from PDH raw counters.");
+
+        using var network = new NetworkCollector();
+        var net = network.Sample();
+        if (!net.TotalsValid)
+            failures.Add("Network since-boot totals should be readable from PDH raw counters.");
+        System.Threading.Thread.Sleep(200);
+        net = network.Sample();
+        if (!net.TotalsValid)
+            failures.Add("Network totals should stay valid after the rate counter primes.");
     }
 
     private static void ExpectLabel(OverlayFrame frame, MetricKind kind, string label, List<string> failures)
@@ -614,6 +625,32 @@ internal static class SettingsSelfTest
             failures.Add("A fresh boot should count as a counter reset.");
         if (SessionMath.CountersReset(new ByteTotals(big, big, big, big), new ByteTotals(big + 100, big, big, big)))
             failures.Add("Growing counters are not a reset.");
+
+        // Inflated network origin with a corrected lower counter must not stay at 0.
+        var inflated = new SessionLedger(
+            10, 20, ByteTotals.Zero,
+            new ByteTotals(5_000_000, 40_000_000_000, 1, 1),
+            new ByteTotals(1_000_000, 30_000_000_000, 2, 2));
+        var corrected = new ByteTotals(1_200_000, 30_100_000_000, 3, 3);
+        var rebased = SessionMath.RebaseRegressed(inflated, corrected);
+        ByteTotals after = rebased.Display(corrected);
+        if (after.Send != corrected.Send || after.Recv != corrected.Recv)
+            failures.Add("Incompatible network origin should fall back to the live since-boot counter.");
+        ByteTotals grown = rebased.Display(new ByteTotals(1_200_500, 30_100_000_400, 4, 4));
+        if (grown.Send != 1_200_500 || grown.Recv != 30_100_000_400)
+            failures.Add("After rebase, Startup totals should follow the corrected counter.");
+
+        // Adapter reset mid-session should keep bytes already counted in this session.
+        var active = new SessionLedger(
+            10, 20, ByteTotals.Zero,
+            new ByteTotals(1_000_000, 0, 0, 0),
+            new ByteTotals(1_500_000, 0, 0, 0));
+        var dipped = new ByteTotals(20_000, 0, 0, 0);
+        var afterReset = SessionMath.RebaseRegressed(active, dipped);
+        if (afterReset.Display(dipped).Send != 500_000)
+            failures.Add("An adapter reset should keep the session bytes already counted.");
+        if (SessionMath.CountersReset(inflated.Last, corrected))
+            failures.Add("A network-only drop with growing disk must not look like a full counter reset.");
     }
 
     private static void AssertCaptionInside(Label? caption, List<string> failures, string state)

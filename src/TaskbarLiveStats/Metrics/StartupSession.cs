@@ -146,6 +146,51 @@ internal static class SessionMath
         return comparable > 0 && dropped == comparable;
     }
 
+    /// <summary>
+    /// When a single channel falls below its session origin (adapter reset or a
+    /// corrected counter source), keep any carry and follow the new reading.
+    /// Without this, Startup totals stay stuck at 0 forever for that channel.
+    /// </summary>
+    public static SessionLedger RebaseRegressed(SessionLedger state, ByteTotals current)
+    {
+        ulong oSend = state.Origin.Send, oRecv = state.Origin.Recv, oRead = state.Origin.Read, oWrite = state.Origin.Write;
+        ulong cSend = state.Carry.Send, cRecv = state.Carry.Recv, cRead = state.Carry.Read, cWrite = state.Carry.Write;
+        bool changed = false;
+        Fix(current.Send, state.Last.Send, ref oSend, ref cSend, ref changed);
+        Fix(current.Recv, state.Last.Recv, ref oRecv, ref cRecv, ref changed);
+        Fix(current.Read, state.Last.Read, ref oRead, ref cRead, ref changed);
+        Fix(current.Write, state.Last.Write, ref oWrite, ref cWrite, ref changed);
+        if (!changed)
+            return state;
+        return state with
+        {
+            Origin = new ByteTotals(oSend, oRecv, oRead, oWrite),
+            Carry = new ByteTotals(cSend, cRecv, cRead, cWrite)
+        };
+    }
+
+    private static void Fix(ulong current, ulong last, ref ulong origin, ref ulong carry, ref bool changed)
+    {
+        if (current >= origin)
+            return;
+
+        ulong prior = ByteTotals.SessionBytes(carry, last, origin);
+        if (prior == 0 && last < origin)
+        {
+            // Origin is on an incompatible scale (for example an old inflated sum).
+            // Follow the live since-boot counter so the total is not stuck at zero.
+            carry = 0;
+            origin = 0;
+        }
+        else
+        {
+            carry = prior;
+            origin = current;
+        }
+
+        changed = true;
+    }
+
     private static void Note(ulong last, ulong current, ref int comparable, ref int dropped)
     {
         if (last < 4096)
@@ -441,7 +486,13 @@ internal sealed class StartupSessionStore : IDisposable
     public ByteTotals Display(ByteTotals current)
     {
         lock (_gate)
-            return _state?.Display(current) ?? current;
+        {
+            if (_state is null)
+                return current;
+            SessionLedger state = SessionMath.RebaseRegressed(_state.Value, current);
+            _state = state;
+            return state.Display(current);
+        }
     }
 
     public void Observe(ByteTotals current, bool force)
@@ -456,8 +507,16 @@ internal sealed class StartupSessionStore : IDisposable
                 long tick = Environment.TickCount64;
                 long boot = BootClock.Stamp();
                 long shutdown = BootClock.ShutdownFileTime();
+                bool rebased = false;
+                if (_state is SessionLedger open)
+                {
+                    SessionLedger next = SessionMath.RebaseRegressed(open, current);
+                    rebased = next.Origin != open.Origin || next.Carry != open.Carry;
+                    _state = next;
+                }
+
                 bool boundary = _state is SessionLedger saved && Boundary(saved, boot, shutdown);
-                if (!force && !boundary && _state != null && tick - _lastTick < FlushIntervalMs)
+                if (!force && !rebased && !boundary && _state != null && tick - _lastTick < FlushIntervalMs)
                     return;
 
                 if (_state is null)
