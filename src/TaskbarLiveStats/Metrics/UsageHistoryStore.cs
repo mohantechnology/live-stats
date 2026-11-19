@@ -200,12 +200,12 @@ internal sealed class UsageHistoryStore : IDisposable
                 bucket = 60;
                 break;
             case UsageRange.Hour:
-                start = AlignDown(now.AddHours(-1), 60);
-                bucket = 60;
+                start = AlignDown(now.AddHours(-1), 600);
+                bucket = 600;
                 break;
             case UsageRange.Hours5:
-                start = AlignDown(now.AddHours(-5), 300);
-                bucket = 300;
+                start = AlignDown(now.AddHours(-5), 1800);
+                bucket = 1800;
                 break;
             case UsageRange.Week:
                 start = now.Date.AddDays(-7);
@@ -220,24 +220,28 @@ internal sealed class UsageHistoryStore : IDisposable
                 bucket = 86_400;
                 break;
             case UsageRange.Day:
+                // Full calendar day so 2-hour bars stay visible even early morning.
                 start = now.Date;
-                bucket = 900;
+                end = start.AddDays(1);
+                bucket = 7200;
                 break;
             case UsageRange.Custom:
                 DateTime from = (customFrom ?? now.Date.AddDays(-7)).Date;
                 DateTime to = (customTo ?? now.Date).Date;
                 if (to < from)
                     (from, to) = (to, from);
-                end = to.Date >= now.Date ? now : to.Date.AddDays(1);
+                // Inclusive end date → exclusive next midnight (full last day, not "now").
+                end = to.Date.AddDays(1);
                 if (end - from > TimeSpan.FromDays(RetentionDays))
                     from = end.AddDays(-RetentionDays);
                 start = from;
                 double days = Math.Max(0, (end - start).TotalDays);
-                bucket = days <= 1 ? 900 : 86_400;
+                bucket = days <= 1 ? 7200 : 86_400;
                 break;
             default:
                 start = now.Date;
-                bucket = 900;
+                end = start.AddDays(1);
+                bucket = 7200;
                 break;
         }
 

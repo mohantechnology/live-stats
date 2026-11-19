@@ -273,11 +273,16 @@ internal static class SettingsSelfTest
 
             var at = new DateTime(2026, 6, 15, 12, 30, 45);
             ExpectWindow(failures, UsageRange.Minutes15, at, 60, 15, 17, "15 min");
-            ExpectWindow(failures, UsageRange.Hour, at, 60, 60, 62, "1 hour");
-            ExpectWindow(failures, UsageRange.Hours5, at, 300, 300, 306, "5 hours");
+            ExpectWindow(failures, UsageRange.Hour, at, 600, 60, 70, "1 hour");
+            ExpectWindow(failures, UsageRange.Hours5, at, 1800, 300, 330, "5 hours");
             var day = UsageHistoryStore.Resolve(UsageRange.Day, at, null, null);
-            if (day.BucketSeconds != 900 || day.LocalStart.Date != at.Date)
-                failures.Add("Day should stay on today with 15-minute buckets.");
+            if (day.BucketSeconds != 7200 || day.LocalStart.Date != at.Date)
+                failures.Add("Day should stay on today with 2-hour buckets.");
+            if ((day.LocalEnd - day.LocalStart).TotalHours < 23.9)
+                failures.Add("Day should cover the full calendar day.");
+            var dayBuckets = UsageHistoryStore.Read(path, day);
+            if (dayBuckets.Length != 12)
+                failures.Add($"Day should fill 12 two-hour slots, got {dayBuckets.Length}.");
             if (UsageHistoryStore.Resolve(UsageRange.Week, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Week should stay on daily buckets.");
             if (UsageHistoryStore.Resolve(UsageRange.Month, at, null, null).BucketSeconds != 86_400)
@@ -285,8 +290,10 @@ internal static class SettingsSelfTest
             if (UsageHistoryStore.Resolve(UsageRange.Year, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Year should stay on daily buckets.");
             var customDay = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date, at.Date);
-            if (customDay.BucketSeconds != 900)
-                failures.Add("Custom ranges of one day or less should stay on 15-minute buckets.");
+            if (customDay.BucketSeconds != 7200)
+                failures.Add("Custom ranges of one day or less should use 2-hour buckets.");
+            if ((customDay.LocalEnd - customDay.LocalStart).TotalHours < 23.9)
+                failures.Add("Custom single-day should cover the full selected day.");
             var customMulti = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-7), at.Date);
             if (customMulti.BucketSeconds != 86_400)
                 failures.Add("Custom ranges longer than one day should use daily buckets.");

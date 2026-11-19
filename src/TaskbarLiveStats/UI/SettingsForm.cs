@@ -1058,14 +1058,14 @@ internal sealed class SettingsForm : AntdUI.Window
 
     private Panel BuildHistoryTotalRow(out Label total)
     {
-        var row = new Panel { Height = 28, BackColor = BgCard, Margin = Padding.Empty };
+        var row = new Panel { Height = 32, BackColor = BgCard, Margin = Padding.Empty };
         total = new Label
         {
             Text = "",
             AutoSize = false,
             Dock = DockStyle.Fill,
-            Font = _bodyFont,
-            ForeColor = TextMuted,
+            Font = _headingFont,
+            ForeColor = TextPrimary,
             BackColor = BgCard,
             TextAlign = ContentAlignment.MiddleLeft
         };
@@ -1150,8 +1150,7 @@ internal sealed class SettingsForm : AntdUI.Window
             {
                 if (created.Tag is HistoryHoverState hover && hover.Visible)
                 {
-                    hover.Visible = false;
-                    hover.Annotation.IsVisible = false;
+                    ClearHistoryHover(hover);
                     created.Refresh();
                 }
             };
@@ -1283,6 +1282,7 @@ internal sealed class SettingsForm : AntdUI.Window
         double firstSum = 0;
         double secondSum = 0;
         HistoryHoverPoint[] hoverPoints = [];
+        double hoverStep = Math.Max(bucketSeconds, 60) / 86_400.0;
         if (buckets.Length > 0)
         {
             double[] xs = new double[buckets.Length];
@@ -1309,9 +1309,10 @@ internal sealed class SettingsForm : AntdUI.Window
             double step = xs.Length > 1
                 ? Math.Abs(xs[1] - xs[0])
                 : Math.Max(bucketSeconds, 60) / 86_400.0;
-            // Keep grouped bars readable for short ranges (1-minute buckets) and daily ranges.
-            double barSize = Math.Max(step * 0.42, step * 0.2);
-            double offset = step * 0.22;
+            // Coarser buckets (10 min+) get wider paired bars; dense minute views stay narrower.
+            bool coarse = bucketSeconds >= 600 && bucketSeconds < 86_400;
+            double barSize = coarse ? step * 0.34 : Math.Max(step * 0.38, step * 0.18);
+            double offset = coarse ? step * 0.19 : step * 0.22;
             AddHistoryBars(chart, xs, first, firstName, firstHex, -offset, barSize);
             AddHistoryBars(chart, xs, second, secondName, secondHex, offset, barSize);
 
@@ -1326,6 +1327,8 @@ internal sealed class SettingsForm : AntdUI.Window
                     firstName,
                     secondName);
             }
+
+            hoverStep = step;
         }
 
         if (total != null)
@@ -1337,6 +1340,8 @@ internal sealed class SettingsForm : AntdUI.Window
         }
 
         chart.Axes.DateTimeTicksBottom();
+        ConfigureHistoryBottomTicks(chart, bucketSeconds);
+
         chart.Axes.Left.TickGenerator = new ScottPlot.TickGenerators.NumericAutomatic
         {
             LabelFormatter = GroupLayout.FormatVolume
@@ -1344,17 +1349,55 @@ internal sealed class SettingsForm : AntdUI.Window
         StyleHistoryPlot(chart);
         chart.ShowLegend(ScottPlot.Alignment.UpperRight);
 
+        var highlight = chart.Add.HorizontalSpan(0, 0);
+        highlight.FillColor = ScottPlot.Color.FromHex("#FFFFFF").WithAlpha(28);
+        highlight.LineColor = ScottPlot.Color.FromHex("#F2F2F5").WithAlpha(90);
+        highlight.LineWidth = 1;
+        highlight.EnableAutoscale = false;
+        highlight.IsVisible = false;
+
         var tip = chart.Add.Annotation("");
         tip.LabelFontColor = ScottPlot.Color.FromHex("#F2F2F5");
         tip.LabelBackgroundColor = ScottPlot.Color.FromHex("#1E1E22");
         tip.LabelBorderColor = ScottPlot.Color.FromHex("#5A5A62");
         tip.LabelBorderWidth = 1;
         tip.LabelShadowColor = ScottPlot.Colors.Transparent;
+        tip.LabelFontSize = 16;
         tip.OffsetX = 12;
         tip.OffsetY = 12;
         tip.IsVisible = false;
-        plot.Tag = new HistoryHoverState(hoverPoints, tip);
+        plot.Tag = new HistoryHoverState(hoverPoints, tip, highlight, hoverStep);
         plot.Refresh();
+    }
+
+    private static void ConfigureHistoryBottomTicks(ScottPlot.Plot chart, int bucketSeconds)
+    {
+        ScottPlot.TickGenerators.DateTimeFixedInterval? ticks = bucketSeconds switch
+        {
+            // 1 hour → 10-minute bars, label each bar.
+            600 => new ScottPlot.TickGenerators.DateTimeFixedInterval(
+                new ScottPlot.TickGenerators.TimeUnits.Minute(),
+                10,
+                new ScottPlot.TickGenerators.TimeUnits.Minute(),
+                10),
+            // 5 hours → 30-minute bars, label each bar.
+            1800 => new ScottPlot.TickGenerators.DateTimeFixedInterval(
+                new ScottPlot.TickGenerators.TimeUnits.Minute(),
+                30,
+                new ScottPlot.TickGenerators.TimeUnits.Minute(),
+                30),
+            // Day / custom-day → 2-hour bars, label every 2 hours.
+            7200 => new ScottPlot.TickGenerators.DateTimeFixedInterval(
+                new ScottPlot.TickGenerators.TimeUnits.Hour(),
+                2,
+                new ScottPlot.TickGenerators.TimeUnits.Hour(),
+                2),
+            _ => null
+        };
+        if (ticks == null)
+            return;
+        ticks.LabelFormatter = dt => dt.ToString("HH:mm", CultureInfo.InvariantCulture);
+        chart.Axes.Bottom.TickGenerator = ticks;
     }
 
     private static void ShowHistoryEmpty(Label? empty, FormsPlot? plot, string text)
@@ -1420,13 +1463,14 @@ internal sealed class SettingsForm : AntdUI.Window
         double maxX = plot.Plot.Axes.Bottom.Max;
         double minX = plot.Plot.Axes.Bottom.Min;
         double span = Math.Max(maxX - minX, 1.0 / 86_400.0);
-        double hit = Math.Max(span / Math.Max(hover.Points.Length * 1.5, 1), span * 0.03);
+        double hit = Math.Max(
+            Math.Max(hover.Step * 0.55, span / Math.Max(hover.Points.Length * 1.5, 1)),
+            span * 0.03);
         if (best < 0 || bestDist > hit)
         {
             if (!hover.Visible)
                 return;
-            hover.Visible = false;
-            hover.Annotation.IsVisible = false;
+            ClearHistoryHover(hover);
             plot.Refresh();
             return;
         }
@@ -1438,20 +1482,40 @@ internal sealed class SettingsForm : AntdUI.Window
         string text = when
             + "\n" + point.FirstName + ": " + GroupLayout.FormatVolume(point.First)
             + "\n" + point.SecondName + ": " + GroupLayout.FormatVolume(point.Second);
-        if (hover.Visible && hover.Annotation.Text == text)
+        if (hover.Visible && hover.Index == best && hover.Annotation.Text == text)
             return;
 
+        double half = hover.Step * 0.5;
+        hover.Highlight.X1 = point.X - half;
+        hover.Highlight.X2 = point.X + half;
+        hover.Highlight.IsVisible = true;
+        hover.Index = best;
         hover.Visible = true;
         hover.Annotation.Text = text;
         hover.Annotation.IsVisible = true;
         plot.Refresh();
     }
 
-    private sealed class HistoryHoverState(HistoryHoverPoint[] points, ScottPlot.Plottables.Annotation annotation)
+    private static void ClearHistoryHover(HistoryHoverState hover)
+    {
+        hover.Visible = false;
+        hover.Index = -1;
+        hover.Annotation.IsVisible = false;
+        hover.Highlight.IsVisible = false;
+    }
+
+    private sealed class HistoryHoverState(
+        HistoryHoverPoint[] points,
+        ScottPlot.Plottables.Annotation annotation,
+        ScottPlot.Plottables.HorizontalSpan highlight,
+        double step)
     {
         public HistoryHoverPoint[] Points { get; } = points;
         public ScottPlot.Plottables.Annotation Annotation { get; } = annotation;
+        public ScottPlot.Plottables.HorizontalSpan Highlight { get; } = highlight;
+        public double Step { get; } = Math.Max(step, 1.0 / 86_400.0);
         public bool Visible;
+        public int Index = -1;
     }
 
     private readonly record struct HistoryHoverPoint(
@@ -1470,10 +1534,15 @@ internal sealed class SettingsForm : AntdUI.Window
         plot.FigureBackground.Color = bg;
         plot.DataBackground.Color = bg;
         plot.Axes.Color(fg);
+        plot.Axes.Bottom.TickLabelStyle.FontSize = 16;
+        plot.Axes.Left.TickLabelStyle.FontSize = 16;
+        plot.Axes.Bottom.Label.FontSize = 15;
+        plot.Axes.Left.Label.FontSize = 15;
         plot.Grid.MajorLineColor = grid;
         plot.Legend.BackgroundColor = bg;
         plot.Legend.FontColor = fg;
         plot.Legend.OutlineColor = grid;
+        plot.Legend.FontSize = 16;
     }
 
     private decimal CeilingDisplay(double bytesPerSec)
