@@ -107,10 +107,12 @@ internal static class SettingsSelfTest
         Application.DoEvents();
         AssertLayout(form, failures, "normal");
         AssertChrome(form, failures, "normal");
+        AssertScrollPreservedOnSwitch(form, failures, "normal");
         form.WindowState = FormWindowState.Maximized;
         Application.DoEvents();
         AssertLayout(form, failures, "maximized");
         AssertChrome(form, failures, "maximized");
+        AssertScrollPreservedOnSwitch(form, failures, "maximized");
         form.WindowState = FormWindowState.Normal;
         form.Hide();
 
@@ -265,15 +267,18 @@ internal static class SettingsSelfTest
             var day = UsageHistoryStore.Resolve(UsageRange.Day, at, null, null);
             if (day.BucketSeconds != 900 || day.LocalStart.Date != at.Date)
                 failures.Add("Day should stay on today with 15-minute buckets.");
-            if (UsageHistoryStore.Resolve(UsageRange.Week, at, null, null).BucketSeconds != 3600)
-                failures.Add("Week should stay on hourly buckets.");
+            if (UsageHistoryStore.Resolve(UsageRange.Week, at, null, null).BucketSeconds != 86_400)
+                failures.Add("Week should stay on daily buckets.");
             if (UsageHistoryStore.Resolve(UsageRange.Month, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Month should stay on daily buckets.");
             if (UsageHistoryStore.Resolve(UsageRange.Year, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Year should stay on daily buckets.");
-            var custom = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-1), at.Date);
-            if (custom.BucketSeconds != 900)
-                failures.Add("Custom ranges up to two days should stay on 15-minute buckets.");
+            var customDay = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date, at.Date);
+            if (customDay.BucketSeconds != 900)
+                failures.Add("Custom ranges of one day or less should stay on 15-minute buckets.");
+            var customMulti = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-7), at.Date);
+            if (customMulti.BucketSeconds != 86_400)
+                failures.Add("Custom ranges longer than one day should use daily buckets.");
         }
         catch (Exception ex)
         {
@@ -530,9 +535,13 @@ internal static class SettingsSelfTest
 
         foreach (string item in new[] { "15 min", "1 hour", "5 hours", "Day", "Week", "Month", "Year", "Custom" })
         {
-            if (FindSegmented(form, item) == null)
-                failures.Add($"Usage history range '{item}' is missing ({state}).");
+            int historyRanges = CountSegmented(form, item);
+            if (historyRanges < 2)
+                failures.Add($"Usage history range '{item}' should appear for network and disk ({state}), found {historyRanges}.");
         }
+
+        if (FindLabel(form, "Start date") == null || FindLabel(form, "End date") == null)
+            failures.Add($"Custom history should use Start date and End date labels ({state}).");
 
         if (FindSegmented(form, "Restart") == null || FindSegmented(form, "Startup") == null)
             failures.Add($"Total since control is missing ({state}).");
@@ -671,6 +680,184 @@ internal static class SettingsSelfTest
         return null;
     }
 
+    private static void AssertScrollPreservedOnSwitch(SettingsForm form, List<string> failures, string state)
+    {
+        form.ShowSection("monitoring");
+        Application.DoEvents();
+
+        ScrollableControl? scroll = FindScrollHost(form);
+        AntdUI.Switch? toggle = FindLabeledSwitch(form, "Hide when idle")
+            ?? FindLabeledSwitch(form, "Network history")
+            ?? FindFirstSwitch(form);
+        if (scroll == null || toggle == null)
+        {
+            failures.Add($"Could not find scroll host or switch to verify scroll ({state}).");
+            return;
+        }
+
+        // Monitoring must be tall enough to scroll; force a known offset if possible.
+        scroll.AutoScrollMinSize = new Size(0, Math.Max(scroll.AutoScrollMinSize.Height, scroll.ClientSize.Height + 1200));
+        Application.DoEvents();
+        Application.DoEvents();
+
+        int target = Math.Min(360, Math.Max(120, Math.Max(1, scroll.VerticalScroll.Maximum) / 2));
+        scroll.AutoScrollPosition = new Point(0, target);
+        Application.DoEvents();
+        if (scroll is SettingsForm.SettingsScrollPanel panel)
+            panel.RememberScroll();
+        int before = Math.Abs(scroll.AutoScrollPosition.Y);
+        if (before < 40)
+            before = scroll.VerticalScroll.Value;
+        if (before < 40)
+        {
+            failures.Add($"Could not scroll the settings page before toggling a switch ({state}): max={scroll.VerticalScroll.Maximum}, value={scroll.VerticalScroll.Value}, pos={scroll.AutoScrollPosition}.");
+            return;
+        }
+
+        if (toggle.CanFocus)
+        {
+            toggle.Focus();
+            PumpScrollRestore();
+            int afterFocus = scroll.VerticalScroll.Value;
+            if (Math.Abs(afterFocus - before) > 40)
+                failures.Add($"Focusing a switch scrolled the page ({state}): before={before}, after={afterFocus}.");
+            before = scroll.VerticalScroll.Value;
+        }
+
+        bool previous = toggle.Checked;
+        toggle.Checked = !previous;
+        PumpScrollRestore();
+        int afterToggle = scroll.VerticalScroll.Value;
+        toggle.Checked = previous;
+        PumpScrollRestore();
+        int afterRestore = scroll.VerticalScroll.Value;
+
+        if (Math.Abs(afterToggle - before) > 40)
+            failures.Add($"Toggling a switch scrolled the page ({state}): before={before}, after={afterToggle}.");
+        if (Math.Abs(afterRestore - before) > 40)
+            failures.Add($"Restoring a switch scrolled the page ({state}): before={before}, after={afterRestore}.");
+
+        // History filter segment should also keep scroll.
+        var range = FindSegmented(form, "Week");
+        if (range != null)
+        {
+            SetScrollForTest(scroll, before);
+            before = scroll.VerticalScroll.Value;
+            int prior = range.SelectIndex;
+            range.SelectIndex = prior == 4 ? 5 : 4;
+            PumpScrollRestore();
+            int afterRange = scroll.VerticalScroll.Value;
+            range.SelectIndex = prior;
+            PumpScrollRestore();
+            if (Math.Abs(afterRange - before) > 40)
+                failures.Add($"Changing a history filter scrolled the page ({state}): before={before}, after={afterRange}.");
+        }
+
+        foreach (string historyLabel in new[] { "Network history", "Disk history" })
+        {
+            var historySwitch = FindLabeledSwitch(form, historyLabel);
+            if (historySwitch == null)
+            {
+                failures.Add($"Missing {historyLabel} switch ({state}).");
+                continue;
+            }
+
+            SetScrollForTest(scroll, Math.Max(before, 120));
+            int historyBefore = scroll.VerticalScroll.Value;
+            bool wasOn = historySwitch.Checked;
+            historySwitch.Checked = !wasOn;
+            PumpScrollRestore();
+            int historyAfter = scroll.VerticalScroll.Value;
+            historySwitch.Checked = wasOn;
+            PumpScrollRestore();
+            if (Math.Abs(historyAfter - historyBefore) > 40)
+                failures.Add($"Toggling {historyLabel} scrolled the page ({state}): before={historyBefore}, after={historyAfter}.");
+        }
+    }
+
+    private static void SetScrollForTest(ScrollableControl scroll, int y)
+    {
+        if (scroll is SettingsForm.SettingsScrollPanel panel)
+            panel.SetScrollForTests(0, Math.Max(0, y));
+        else
+            scroll.AutoScrollPosition = new Point(0, Math.Max(0, y));
+        Application.DoEvents();
+        Application.DoEvents();
+    }
+
+    private static void PumpScrollRestore()
+    {
+        Application.DoEvents();
+        Application.DoEvents();
+        System.Threading.Thread.Sleep(500);
+        Application.DoEvents();
+        Application.DoEvents();
+    }
+
+    private static ScrollableControl? FindScrollHost(Control root)
+    {
+        foreach (Control c in Enumerate(root))
+        {
+            if (c is ScrollableControl scroll && scroll.AutoScroll && c.Controls.Count > 0 && c.Parent == root)
+                return scroll;
+        }
+
+        foreach (Control c in Enumerate(root))
+        {
+            if (c is ScrollableControl scroll && scroll.AutoScroll)
+                return scroll;
+        }
+
+        return null;
+    }
+
+    private static AntdUI.Switch? FindLabeledSwitch(Control root, string nearbyLabel)
+    {
+        var label = FindLabel(root, nearbyLabel);
+        if (label?.Parent == null)
+            return null;
+        foreach (Control child in label.Parent.Controls)
+        {
+            if (child is AntdUI.Switch toggle)
+                return toggle;
+        }
+
+        // Caption may sit on a header row; search the next sibling rows in the same card.
+        Control? card = label.Parent.Parent;
+        if (card == null)
+            return null;
+        bool seen = false;
+        foreach (Control row in card.Controls)
+        {
+            if (row == label.Parent)
+            {
+                seen = true;
+                continue;
+            }
+
+            if (!seen)
+                continue;
+            foreach (Control child in row.Controls)
+            {
+                if (child is AntdUI.Switch toggle)
+                    return toggle;
+            }
+        }
+
+        return null;
+    }
+
+    private static AntdUI.Switch? FindFirstSwitch(Control root)
+    {
+        foreach (Control c in Enumerate(root))
+        {
+            if (c is AntdUI.Switch toggle)
+                return toggle;
+        }
+
+        return null;
+    }
+
     private static void AssertChrome(SettingsForm form, List<string> failures, string state)
     {
         Control? apply = null;
@@ -721,6 +908,26 @@ internal static class SettingsSelfTest
             }
         }
         return null;
+    }
+
+    private static int CountSegmented(Control root, string itemText)
+    {
+        int count = 0;
+        foreach (Control c in Enumerate(root))
+        {
+            if (c is not AntdUI.Segmented seg)
+                continue;
+            foreach (AntdUI.SegmentedItem item in seg.Items)
+            {
+                if (string.Equals(item.Text, itemText, StringComparison.OrdinalIgnoreCase))
+                {
+                    count++;
+                    break;
+                }
+            }
+        }
+
+        return count;
     }
 
     private static void ClickNamedButton(Control root, string text)

@@ -208,8 +208,8 @@ internal sealed class UsageHistoryStore : IDisposable
                 bucket = 300;
                 break;
             case UsageRange.Week:
-                start = AlignDown(now.AddDays(-7), 3600);
-                bucket = 3600;
+                start = now.Date.AddDays(-7);
+                bucket = 86_400;
                 break;
             case UsageRange.Month:
                 start = now.Date.AddDays(-30);
@@ -233,7 +233,7 @@ internal sealed class UsageHistoryStore : IDisposable
                     from = end.AddDays(-RetentionDays);
                 start = from;
                 double days = Math.Max(0, (end - start).TotalDays);
-                bucket = days <= 2 ? 900 : days <= 14 ? 3600 : 86_400;
+                bucket = days <= 1 ? 900 : 86_400;
                 break;
             default:
                 start = now.Date;
