@@ -84,7 +84,11 @@ internal sealed class TrayAppContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = _menu
         };
-        _tray.DoubleClick += (_, _) => OpenSettings();
+        _tray.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+                OpenSettings();
+        };
 
         _window.ContextMenuStrip = _menu;
         _menu.Opening += (_, _) =>
