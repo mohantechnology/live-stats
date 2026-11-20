@@ -21,6 +21,8 @@ internal sealed class TrayAppContext : ApplicationContext
     private AppSettings _settings;
     private SettingsForm? _settingsForm;
     private bool _userHidden;
+    private bool _fullscreenActive;
+    private readonly System.Windows.Forms.Timer _fullscreenTimer;
 
     public TrayAppContext(bool openSettingsOnStart = false)
     {
@@ -43,6 +45,8 @@ internal sealed class TrayAppContext : ApplicationContext
         _metrics = new MetricsHub(_settings.UpdateIntervalMs);
         _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory, _settings.SaveComputerUseHistory);
         _watcher = new TaskbarWatcher(200);
+        _fullscreenTimer = new System.Windows.Forms.Timer { Interval = 400 };
+        _fullscreenTimer.Tick += (_, _) => RefreshFullscreenState();
 
         _startupItem = new ToolStripMenuItem("Start with Windows")
         {
@@ -117,21 +121,11 @@ internal sealed class TrayAppContext : ApplicationContext
             catch { /* ignore */ }
         };
 
-        _watcher.VisibilityChanged += visible =>
+        _watcher.VisibilityChanged += _ =>
         {
             if (_userHidden)
                 return;
-
-            if (_settings.PlacementMode == PlacementMode.Floating)
-            {
-                _window.SetVisible(true);
-                _metrics.Resume();
-                return;
-            }
-
-            _window.SetVisible(visible);
-            if (visible) _metrics.Resume();
-            else _metrics.Pause();
+            SyncOverlayVisibility();
         };
 
         _watcher.ExplorerRestarted += () =>
@@ -145,35 +139,24 @@ internal sealed class TrayAppContext : ApplicationContext
                 _window.SetVisible(false);
                 return;
             }
-            _window.Reembed(_watcher.Current);
+            SyncOverlayVisibility();
+            if (!_fullscreenActive || _settings.ShowOnFullscreen)
+                _window.Reembed(_watcher.Current);
         };
 
         _watcher.Changed += info =>
         {
             if (_userHidden || _settings.PlacementMode != PlacementMode.Taskbar)
                 return;
+            if (_fullscreenActive && _settings.ShowOnFullscreen)
+                return;
             if (info.IsVisible)
                 _window.ApplyTaskbar(info);
         };
 
         _watcher.Start();
-
-        if (_settings.PlacementMode == PlacementMode.Floating)
-        {
-            _window.SetVisible(true);
-            _metrics.Resume();
-        }
-        else if (_watcher.Current.IsVisible)
-        {
-            _window.SetVisible(true);
-            _window.ApplyTaskbar(_watcher.Current);
-            _metrics.Resume();
-        }
-        else
-        {
-            _window.SetVisible(false);
-            _metrics.Pause();
-        }
+        _fullscreenTimer.Start();
+        RefreshFullscreenState(force: true);
 
         if (openSettingsOnStart)
         {
@@ -193,14 +176,12 @@ internal sealed class TrayAppContext : ApplicationContext
     private void ShowOverlay()
     {
         _window.SetUserSuppressed(false);
-        _window.SetVisible(true);
-        if (_settings.PlacementMode == PlacementMode.Taskbar && _watcher.Current.TrayHwnd != IntPtr.Zero)
-            _window.ApplyTaskbar(_watcher.Current);
-        _metrics.Resume();
+        SyncOverlayVisibility();
     }
 
     private void HideOverlay()
     {
+        _window.SetFullscreenFloat(false);
         _window.SetUserSuppressed(true);
         _metrics.Pause();
     }
@@ -219,6 +200,73 @@ internal sealed class TrayAppContext : ApplicationContext
             HideOverlay();
         else
             ShowOverlay();
+    }
+
+    private void RefreshFullscreenState(bool force = false)
+    {
+        IntPtr overlay = _window.HandlePublic;
+        IntPtr settingsHwnd = _settingsForm is { IsDisposed: false, IsHandleCreated: true }
+            ? _settingsForm.Handle
+            : IntPtr.Zero;
+        bool fullscreen = FullscreenDetector.IsFullscreenAppActive(overlay, settingsHwnd);
+        if (!force && fullscreen == _fullscreenActive)
+            return;
+
+        _fullscreenActive = fullscreen;
+        if (_userHidden)
+            return;
+
+        SyncOverlayVisibility();
+    }
+
+    /// <summary>
+    /// Applies taskbar visibility, fullscreen hide, and optional fullscreen float.
+    /// Does not clear a user hotkey hide.
+    /// </summary>
+    private void SyncOverlayVisibility()
+    {
+        if (_userHidden)
+            return;
+
+        _window.SetUserSuppressed(false);
+
+        if (_fullscreenActive && !_settings.ShowOnFullscreen)
+        {
+            _window.SetFullscreenFloat(false);
+            _window.SetVisible(false);
+            _metrics.Pause();
+            return;
+        }
+
+        if (_fullscreenActive && _settings.ShowOnFullscreen)
+        {
+            _window.SetFullscreenFloat(true);
+            _window.SetVisible(true);
+            _metrics.Resume();
+            return;
+        }
+
+        _window.SetFullscreenFloat(false);
+
+        if (_settings.PlacementMode == PlacementMode.Floating)
+        {
+            _window.SetVisible(true);
+            _metrics.Resume();
+            return;
+        }
+
+        bool taskbarVisible = _watcher.Current.IsVisible;
+        _window.SetVisible(taskbarVisible);
+        if (taskbarVisible)
+        {
+            if (_watcher.Current.TrayHwnd != IntPtr.Zero)
+                _window.ApplyTaskbar(_watcher.Current);
+            _metrics.Resume();
+        }
+        else
+        {
+            _metrics.Pause();
+        }
     }
 
     private void OpenSettings()
@@ -257,14 +305,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
         // Apply and OK bring the bar back so the change is visible.
         _userHidden = false;
-        if (_settings.PlacementMode == PlacementMode.Floating || _watcher.Current.IsVisible)
-            ShowOverlay();
-        else
-        {
-            _window.SetUserSuppressed(false);
-            _window.SetVisible(false);
-            _metrics.Pause();
-        }
+        RefreshFullscreenState(force: true);
     }
 
     private void Persist() => _store.Save(_settings);
@@ -292,6 +333,8 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         Persist();
         _hotkey.Dispose();
+        _fullscreenTimer.Stop();
+        _fullscreenTimer.Dispose();
         _watcher.Stop();
         _metrics.Pause();
         _tray.Visible = false;
@@ -309,6 +352,8 @@ internal sealed class TrayAppContext : ApplicationContext
         if (disposing)
         {
             _hotkey.Dispose();
+            _fullscreenTimer.Stop();
+            _fullscreenTimer.Dispose();
             _tray.Dispose();
             _menu.Dispose();
             _metrics.Dispose();

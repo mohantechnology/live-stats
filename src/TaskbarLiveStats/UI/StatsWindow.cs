@@ -18,6 +18,8 @@ internal sealed class StatsWindow : Form
     private readonly Dictionary<MetricKind, IdleWatch> _idleWatches = new();
     private bool _barVisible = true;
     private bool _suppressed;
+    /// <summary>Temporary float while a fullscreen app is active and Show on fullscreen is on.</summary>
+    private bool _overlayFloat;
     private bool _gdiPaint;
     private TaskbarInfo _lastInfo;
     private Size _size = new(420, 40);
@@ -37,6 +39,10 @@ internal sealed class StatsWindow : Form
     public bool IsEmbedded => _embedder.IsEmbedded;
 
     public bool IsOverlayShown => _barVisible && !_suppressed;
+
+    /// <summary>True when drawing as a free-floating layered window (saved floating mode or fullscreen override).</summary>
+    private bool UsesFloatingSurface =>
+        _overlayFloat || _settings.PlacementMode == PlacementMode.Floating;
 
     public event Action? SettingsChanged;
 
@@ -149,11 +155,11 @@ internal sealed class StatsWindow : Form
 
         if (placementChanged || forceLayout)
         {
-            if (_settings.PlacementMode == PlacementMode.Floating)
+            if (UsesFloatingSurface)
             {
                 _embedder.DetachFromTaskbar();
                 _layoutDirty = true;
-                ApplyFloatingPosition(applyEdge: _settings.EdgePreset != EdgePreset.None);
+                ApplyFloatingPosition(applyEdge: !_overlayFloat && _settings.EdgePreset != EdgePreset.None);
             }
             else
             {
@@ -162,7 +168,7 @@ internal sealed class StatsWindow : Form
                     ApplyTaskbar(_lastInfo, force: true);
             }
         }
-        else if (_settings.PlacementMode == PlacementMode.Floating)
+        else if (UsesFloatingSurface)
         {
             ApplyFloatingOpacity();
             PaintFrame();
@@ -204,7 +210,7 @@ internal sealed class StatsWindow : Form
     private void RemeasureAndPaint()
     {
         int thickness;
-        if (_settings.PlacementMode == PlacementMode.Taskbar && _lastInfo.TrayHwnd != IntPtr.Zero)
+        if (!UsesFloatingSurface && _lastInfo.TrayHwnd != IntPtr.Zero)
         {
             thickness = _settings.Orientation == OverlayOrientation.Vertical
                 ? Math.Max(24, Math.Min(_lastInfo.TrayRect.Width, _lastInfo.TrayRect.Height))
@@ -222,7 +228,7 @@ internal sealed class StatsWindow : Form
             _size = measured;
             _embedder.DesiredWidth = measured.Width;
             _embedder.DesiredHeight = measured.Height;
-            if (_settings.PlacementMode == PlacementMode.Taskbar)
+            if (!UsesFloatingSurface)
             {
                 _embedder.InvalidateLayoutCache();
                 _layoutDirty = true;
@@ -236,7 +242,7 @@ internal sealed class StatsWindow : Form
         if (_suppressed || !_barVisible)
             return;
 
-        if (_settings.PlacementMode == PlacementMode.Taskbar)
+        if (!UsesFloatingSurface)
         {
             if (_layoutDirty && _lastInfo.TrayHwnd != IntPtr.Zero && _barVisible)
                 ApplyTaskbar(_lastInfo, force: true);
@@ -253,7 +259,7 @@ internal sealed class StatsWindow : Form
 
     private void ApplyTaskbar(TaskbarInfo info, bool force)
     {
-        if (_suppressed || !_barVisible)
+        if (_suppressed || !_barVisible || UsesFloatingSurface)
             return;
 
         if (_settings.PlacementMode != PlacementMode.Taskbar)
@@ -318,6 +324,37 @@ internal sealed class StatsWindow : Form
 
         _embedder.ReleaseSlot();
         SetVisible(false);
+    }
+
+    /// <summary>
+    /// While a fullscreen app is up and Show on fullscreen is enabled, leave the taskbar
+    /// and draw as a topmost floating overlay. Cleared when fullscreen ends.
+    /// </summary>
+    public void SetFullscreenFloat(bool enabled)
+    {
+        if (_overlayFloat == enabled)
+            return;
+
+        _overlayFloat = enabled;
+        if (enabled)
+        {
+            _embedder.DetachFromTaskbar();
+            _layoutDirty = true;
+            if (_barVisible && !_suppressed)
+                ApplyFloatingPosition(applyEdge: false);
+            return;
+        }
+
+        _layoutDirty = true;
+        if (_settings.PlacementMode == PlacementMode.Floating)
+        {
+            if (_barVisible && !_suppressed)
+                ApplyFloatingPosition(applyEdge: false);
+            return;
+        }
+
+        if (_lastInfo.TrayHwnd != IntPtr.Zero && _barVisible && !_suppressed)
+            ApplyTaskbar(_lastInfo, force: true);
     }
 
     public void SetVisible(bool visible)
@@ -386,7 +423,7 @@ internal sealed class StatsWindow : Form
 
         NativeMethods.ShowWindow(Handle, NativeMethods.SW_SHOWNOACTIVATE);
 
-        if (_settings.PlacementMode == PlacementMode.Floating)
+        if (UsesFloatingSurface)
         {
             ApplyFloatingPosition(applyEdge: false);
             return;
@@ -401,7 +438,7 @@ internal sealed class StatsWindow : Form
 
     public void Reembed(TaskbarInfo info)
     {
-        if (_suppressed || _settings.PlacementMode != PlacementMode.Taskbar)
+        if (_suppressed || UsesFloatingSurface || _settings.PlacementMode != PlacementMode.Taskbar)
             return;
 
         _lastInfo = info;
@@ -429,7 +466,7 @@ internal sealed class StatsWindow : Form
         _settings.EdgePreset = EdgePreset.None;
         _settings.TaskbarOffsetX = 0;
         _embedder.OffsetX = 0;
-        if (_settings.PlacementMode == PlacementMode.Floating)
+        if (UsesFloatingSurface)
             ApplyFloatingPosition(applyEdge: false);
         else if (_lastInfo.TrayHwnd != IntPtr.Zero)
             ApplyTaskbar(_lastInfo, force: true);
@@ -494,14 +531,14 @@ internal sealed class StatsWindow : Form
 
     private void ApplyFloatingOpacity()
     {
-        if (_settings.PlacementMode != PlacementMode.Floating || HandlePublic == IntPtr.Zero)
+        if (!UsesFloatingSurface || HandlePublic == IntPtr.Zero)
             return;
 
         // Opacity is applied via UpdateLayeredWindow SourceConstantAlpha on paint.
     }
 
     private byte FloatingAlpha =>
-        _settings.PlacementMode == PlacementMode.Floating
+        UsesFloatingSurface
             ? (byte)Math.Clamp((int)Math.Round(_settings.Opacity * 255), 128, 255)
             : (byte)255;
 
@@ -535,7 +572,9 @@ internal sealed class StatsWindow : Form
     private void RaiseFloatingZOrder()
     {
         if (HandlePublic == IntPtr.Zero) return;
-        IntPtr after = _settings.AlwaysOnTop ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST;
+        // Fullscreen override must stay above exclusive / borderless apps.
+        bool topmost = _settings.AlwaysOnTop || _overlayFloat;
+        IntPtr after = topmost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST;
         NativeMethods.SetWindowPos(
             Handle, after, 0, 0, 0, 0,
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
@@ -543,7 +582,7 @@ internal sealed class StatsWindow : Form
 
     protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
     {
-        if (_settings.PlacementMode == PlacementMode.Taskbar &&
+        if (!UsesFloatingSurface &&
             _embedder is { IsEmbedded: true, HasValidLayout: true })
         {
             var (cx, cy, cw, ch) = _embedder.GetClientBounds();
@@ -582,10 +621,10 @@ internal sealed class StatsWindow : Form
     {
         if (_suppressed || !_barVisible || HandlePublic == IntPtr.Zero) return;
 
-        if (_settings.PlacementMode == PlacementMode.Taskbar && !_embedder.HasValidLayout)
+        if (!UsesFloatingSurface && !_embedder.HasValidLayout)
             return;
 
-        if (_settings.PlacementMode == PlacementMode.Taskbar && _embedder.IsEmbedded)
+        if (!UsesFloatingSurface && _embedder.IsEmbedded)
         {
             if (_embedder.IsLayered)
                 _embedder.UseGdiPaint();
@@ -597,7 +636,7 @@ internal sealed class StatsWindow : Form
             return;
         }
 
-        if (_gdiPaint || (_settings.PlacementMode == PlacementMode.Taskbar && !_embedder.IsLayered))
+        if (_gdiPaint || (!UsesFloatingSurface && !_embedder.IsLayered))
         {
             Invalidate();
             return;
@@ -605,13 +644,13 @@ internal sealed class StatsWindow : Form
 
         int x = Left;
         int y = Top;
-        if (_settings.PlacementMode == PlacementMode.Taskbar)
+        if (!UsesFloatingSurface)
             (x, y) = _embedder.GetLayeredDestPos();
 
         bool ok = _renderer.PaintLayered(Handle, _frame, _size.Width, _size.Height, x, y, asChild: false, FloatingAlpha);
         if (ok)
         {
-            if (_settings.PlacementMode == PlacementMode.Taskbar)
+            if (!UsesFloatingSurface)
                 _embedder.RaiseZOrder();
             else
                 RaiseFloatingZOrder();
@@ -621,7 +660,7 @@ internal sealed class StatsWindow : Form
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        if (!_gdiPaint && (_settings.PlacementMode == PlacementMode.Floating || _embedder.IsLayered))
+        if (!_gdiPaint && (UsesFloatingSurface || _embedder.IsLayered))
             return;
         e.Graphics.Clear(_renderer.FillColor);
         _renderer.PaintGdi(e.Graphics, _frame, ClientSize.Width, ClientSize.Height);
@@ -629,7 +668,7 @@ internal sealed class StatsWindow : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        if (_gdiPaint || (_settings.PlacementMode == PlacementMode.Taskbar && !_embedder.IsLayered))
+        if (_gdiPaint || (!UsesFloatingSurface && !_embedder.IsLayered))
             e.Graphics.Clear(_renderer.FillColor);
     }
 
@@ -661,7 +700,7 @@ internal sealed class StatsWindow : Form
         if (Math.Abs(dx) > 3 || Math.Abs(dy) > 3)
             _suppressClick = true;
 
-        if (_settings.PlacementMode == PlacementMode.Taskbar)
+        if (!UsesFloatingSurface)
         {
             // Drag along the taskbar; Y stays locked to the slot.
             // Keep a generous but finite range so a bad offset can't push the bar off-screen.
@@ -688,7 +727,7 @@ internal sealed class StatsWindow : Form
 
         if (!_suppressClick) return;
 
-        if (_settings.PlacementMode == PlacementMode.Floating)
+        if (UsesFloatingSurface)
         {
             ClampToVirtualScreen();
             _settings.FloatingX = Left;
@@ -759,7 +798,7 @@ internal sealed class StatsWindow : Form
         _renderer.DetailAnchor = DetailAnchor.Center;
         if (FrameHasDetails(_frame))
             return;
-        if (_settings.PlacementMode != PlacementMode.Taskbar || _lastInfo.TrayHwnd == IntPtr.Zero)
+        if (UsesFloatingSurface || _lastInfo.TrayHwnd == IntPtr.Zero)
             return;
 
         bool horizontal = _lastInfo.TrayRect.Width >= _lastInfo.TrayRect.Height;

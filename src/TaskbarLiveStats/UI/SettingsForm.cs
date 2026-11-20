@@ -49,6 +49,7 @@ internal sealed class SettingsForm : AntdUI.Window
     private readonly Dictionary<MetricKind, ColorSwatch> _swatches = new();
 
     private AntdUI.Switch? _startWithWindows;
+    private AntdUI.Switch? _showOnFullscreen;
     private AntdUI.Switch? _hotkeyEnabled;
     private AntdUI.InputNumber? _intervalMs;
     private AntdUI.Switch? _cpu, _memory, _gpu, _vram, _netSend, _netRecv, _diskRead, _diskWrite, _npu, _npuMemory;
@@ -362,6 +363,12 @@ internal sealed class SettingsForm : AntdUI.Window
         startup.Add(SwitchRow("Start with Windows", _draft.StartWithWindows, out _startWithWindows));
         page.Add(startup);
 
+        var fullscreen = NewCard();
+        fullscreen.Add(Heading("Fullscreen"));
+        fullscreen.Add(SwitchRow("Show on full screen", _draft.ShowOnFullscreen, out _showOnFullscreen));
+        fullscreen.Add(Hint("When on, live stats stay visible over fullscreen apps. When off, the overlay hides while any app is fullscreen.", 48));
+        page.Add(fullscreen);
+
         var updates = NewCard();
         updates.Add(Heading("Update frequency"));
         updates.Add(Hint("How often the numbers refresh, in milliseconds (100 – 10000).", 36));
@@ -620,6 +627,8 @@ internal sealed class SettingsForm : AntdUI.Window
     {
         if (_startWithWindows != null)
             _draft.StartWithWindows = _startWithWindows.Checked;
+        if (_showOnFullscreen != null)
+            _draft.ShowOnFullscreen = _showOnFullscreen.Checked;
         if (_hotkeyEnabled != null)
             _draft.HotkeyEnabled = _hotkeyEnabled.Checked;
         if (_intervalMs != null)

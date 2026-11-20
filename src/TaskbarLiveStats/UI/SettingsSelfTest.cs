@@ -137,6 +137,8 @@ internal static class SettingsSelfTest
         var defaults = AppSettings.CreateDefaults();
         if (!defaults.SaveUsageHistory || !defaults.SaveNetworkHistory || !defaults.SaveDiskHistory || !defaults.SaveComputerUseHistory)
             failures.Add("Network, disk, and computer-use history should be on by default.");
+        if (defaults.ShowOnFullscreen)
+            failures.Add("Show on full screen should be off by default.");
         if (defaults.TotalSince != TotalSince.Restart)
             failures.Add("Total since should default to the since-reboot counter.");
         if (!defaults.TotalUsage.NetSend || !defaults.TotalUsage.NetRecv || !defaults.TotalUsage.DiskRead || !defaults.TotalUsage.DiskWrite)

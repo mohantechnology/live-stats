@@ -363,6 +363,13 @@ internal sealed class AppSettings
     public int TaskbarOffsetX { get; set; }
     public double Opacity { get; set; } = 1.0;
     public bool AlwaysOnTop { get; set; } = true;
+
+    /// <summary>
+    /// When true, keep the live stats visible over fullscreen apps.
+    /// When false (default), hide the overlay while any app is fullscreen.
+    /// </summary>
+    public bool ShowOnFullscreen { get; set; }
+
     public bool FollowSystemTheme { get; set; } = true;
     public RateUnit RateUnit { get; set; } = RateUnit.Bytes;
 
@@ -461,6 +468,7 @@ internal sealed class AppSettings
         TaskbarOffsetX = TaskbarOffsetX,
         Opacity = Opacity,
         AlwaysOnTop = AlwaysOnTop,
+        ShowOnFullscreen = ShowOnFullscreen,
         FollowSystemTheme = FollowSystemTheme,
         RateUnit = RateUnit,
         Density = Density,
