@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           # Project TFM is net10.0-windows; allow newest SDK that can target it.
           dotnet-version: |
@@ -87,39 +87,112 @@ jobs:
           Copy-Item .\publish-fd\TaskbarLiveStats.exe `
             .\artifacts\framework-dependent\TaskbarLiveStats.exe
 
+          # Stable names (used by continuous release + README direct links).
           Compress-Archive -Path .\artifacts\portable\* `
-            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-portable-v$version.zip" -Force
-
+            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-portable.zip" -Force
           Compress-Archive -Path .\artifacts\framework-dependent\* `
-            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-fd-v$version.zip" -Force
+            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-fd.zip" -Force
 
-          # Keep raw EXE names stable for Actions artifact browsing.
+          # Versioned copies for Actions artifact browsing / tagged releases.
+          Copy-Item ".\artifacts\TaskbarLiveStats-win-x64-portable.zip" `
+            ".\artifacts\TaskbarLiveStats-win-x64-portable-v$version.zip"
+          Copy-Item ".\artifacts\TaskbarLiveStats-win-x64-fd.zip" `
+            ".\artifacts\TaskbarLiveStats-win-x64-fd-v$version.zip"
+
+          Copy-Item .\artifacts\portable\TaskbarLiveStats.exe `
+            ".\artifacts\TaskbarLiveStats-win-x64-portable.exe"
+          Copy-Item .\artifacts\framework-dependent\TaskbarLiveStats.exe `
+            ".\artifacts\TaskbarLiveStats-win-x64-fd.exe"
+
           Copy-Item .\artifacts\portable\TaskbarLiveStats.exe `
             ".\artifacts\TaskbarLiveStats-win-x64-portable-v$version-$stamp-$sha.exe"
           Copy-Item .\artifacts\framework-dependent\TaskbarLiveStats.exe `
             ".\artifacts\TaskbarLiveStats-win-x64-fd-v$version-$stamp-$sha.exe"
 
+          @"
+          ## Windows builds ready
+
+          | Package | Recommended |
+          | --- | --- |
+          | ``TaskbarLiveStats-win-x64-portable`` | Yes — self-contained EXE, no .NET install |
+          | ``TaskbarLiveStats-win-x64-framework-dependent`` | Smaller; needs .NET 10 Desktop Runtime |
+
+          ### Where to download
+          1. Scroll to **Artifacts** at the bottom of this job summary / run page
+          2. Or open the [continuous release](https://github.com/mohantechnology/live-stats/releases/tag/continuous) (updated on every ``main`` push)
+          3. Or open [Releases](https://github.com/mohantechnology/live-stats/releases) for version tags (``v*``)
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
           Get-ChildItem .\artifacts -File | Format-Table Name, Length
 
       - name: Upload portable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TaskbarLiveStats-win-x64-portable
           path: |
+            artifacts/TaskbarLiveStats-win-x64-portable.zip
+            artifacts/TaskbarLiveStats-win-x64-portable.exe
             artifacts/TaskbarLiveStats-win-x64-portable-v*.zip
             artifacts/TaskbarLiveStats-win-x64-portable-v*.exe
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload framework-dependent artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TaskbarLiveStats-win-x64-framework-dependent
           path: |
+            artifacts/TaskbarLiveStats-win-x64-fd.zip
+            artifacts/TaskbarLiveStats-win-x64-fd.exe
             artifacts/TaskbarLiveStats-win-x64-fd-v*.zip
             artifacts/TaskbarLiveStats-win-x64-fd-v*.exe
           if-no-files-found: error
           retention-days: 30
+
+  publish-continuous:
+    name: Update continuous release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download portable artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: TaskbarLiveStats-win-x64-portable
+          path: release-assets
+
+      - name: Download framework-dependent artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: TaskbarLiveStats-win-x64-framework-dependent
+          path: release-assets
+
+      - name: Publish continuous release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous build (main)
+          prerelease: true
+          make_latest: false
+          body: |
+            Auto-updated on every push to `main`.
+
+            **Recommended:** `TaskbarLiveStats-win-x64-portable.zip` or `.exe` (self-contained, Windows 10/11 x64).
+
+            Direct links:
+            - [Portable ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.zip)
+            - [Portable EXE](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.exe)
+            - [Framework-dependent ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-fd.zip)
+          files: |
+            release-assets/TaskbarLiveStats-win-x64-portable.zip
+            release-assets/TaskbarLiveStats-win-x64-portable.exe
+            release-assets/TaskbarLiveStats-win-x64-fd.zip
+            release-assets/TaskbarLiveStats-win-x64-fd.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
     name: GitHub Release
@@ -131,13 +204,13 @@ jobs:
 
     steps:
       - name: Download portable artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: TaskbarLiveStats-win-x64-portable
           path: release-assets
 
       - name: Download framework-dependent artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: TaskbarLiveStats-win-x64-framework-dependent
           path: release-assets
@@ -147,7 +220,9 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            release-assets/*.zip
-            release-assets/*.exe
+            release-assets/TaskbarLiveStats-win-x64-portable-v*.zip
+            release-assets/TaskbarLiveStats-win-x64-portable-v*.exe
+            release-assets/TaskbarLiveStats-win-x64-fd-v*.zip
+            release-assets/TaskbarLiveStats-win-x64-fd-v*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

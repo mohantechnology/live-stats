@@ -4,17 +4,31 @@ Live CPU, memory, GPU, network, and disk stats embedded in the Windows taskbar.
 
 ## Download (Windows)
 
-Every push to `main` builds downloadable Windows artifacts in GitHub Actions:
+**Recommended (portable, no .NET install):**
 
-1. Open [Actions](https://github.com/mohantechnology/live-stats/actions)
-2. Open the latest **Build Windows portable** run on `main`
-3. Download **TaskbarLiveStats-win-x64-portable** (recommended)
+- [Download portable ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.zip)
+- [Download portable EXE](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.exe)
 
-That package is a **self-contained single-file EXE** — unzip (or use the `.exe` directly) and run on Windows 10/11 x64. No separate .NET install is required.
+These links always point at the latest successful `main` build ([continuous release](https://github.com/mohantechnology/live-stats/releases/tag/continuous)). Unzip if needed, then run on Windows 10/11 x64.
 
-A smaller **framework-dependent** artifact is also uploaded; that one needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+Smaller build (needs [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)):
 
-Tagged releases (`v*`) also publish the same files on the repo [Releases](https://github.com/mohantechnology/live-stats/releases) page.
+- [Framework-dependent ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-fd.zip)
+
+Versioned releases: [Releases](https://github.com/mohantechnology/live-stats/releases) (created when you push a `v*` tag).
+
+### How to view artifacts on GitHub
+
+**Option A — Continuous release (easiest for users)**  
+Open [Releases → Continuous build](https://github.com/mohantechnology/live-stats/releases/tag/continuous) and download the `.zip` / `.exe` assets.
+
+**Option B — From an Actions run**  
+1. Open [Actions → Build Windows portable](https://github.com/mohantechnology/live-stats/actions/workflows/build-release.yml)  
+2. Click the latest green run on `main`  
+3. Scroll to the bottom **Artifacts** section  
+4. Download **TaskbarLiveStats-win-x64-portable** (zip of the EXE)
+
+Actions artifacts expire after 30 days. The continuous release links above stay available and are what the README points to.
 
 ## Requirements
 
