@@ -1,113 +1,120 @@
 # Taskbar Live Stats
 
-Live CPU, memory, GPU, network, and disk stats embedded in the Windows taskbar.
+Live system stats on your Windows taskbar — CPU, memory, GPU, network, and disk — always visible while you work.
+
+Runs from the system tray as a portable app. No installer required.
+
+## Features
+
+### Live metrics
+- **CPU, Memory (RAM), GPU, VRAM** — utilization at a glance
+- **Upload / Download** — live network speeds
+- **Disk read / Disk write** — live storage speeds
+- **NPU** (and NPU memory) when your PC reports one
+- Optional **busiest cores / GPU engines** next to CPU and GPU (handy on hybrid CPUs)
+- Per-metric **hide when idle** — unused meters stay out of the way
+- Optional **totals** for network and disk (since reboot or since last startup)
+- Speeds in **bytes/s** or **bits/s**
+
+### Where it lives
+- **Taskbar mode** — sits near the notification area
+- **Floating mode** — free overlay you can drag and snap to screen edges
+- **Horizontal or vertical** layout
+- **Compact or Default** density, custom fonts, opacity, and colors
+- Colors that change with load (**idle / normal / high** thresholds)
+
+### Usage history
+- Charts for **network**, **disk**, and **computer awake time**
+- Ranges from **15 minutes** up to a **year**, plus custom dates
+- Period totals above each chart
+- History stored locally on your PC (nothing is uploaded)
+
+### Tray & convenience
+- Lives in the **notification area** (system tray)
+- **Left-click** tray icon → open Settings
+- **Right-click** tray or stats bar → Settings, show/hide stats, Always on top, Task Manager, Autostart, Exit
+- Keyboard shortcut **Win+Ctrl+U** to show/hide the live bar (can be disabled)
+- **Autostart with Windows** (on by default on first run)
+- Single instance — launching again focuses the existing app
 
 ## Download (Windows)
 
-**Recommended (portable, no .NET install):**
+**Recommended — portable, no .NET install:**
 
 - [Download portable ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.zip)
 - [Download portable EXE](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-portable.exe)
 
-These links always point at the latest successful `main` build ([continuous release](https://github.com/mohantechnology/live-stats/releases/tag/continuous)). Unzip if needed, then run on Windows 10/11 x64.
+1. Download the ZIP or EXE above  
+2. Unzip if needed  
+3. Double-click `TaskbarLiveStats.exe`  
+4. Look for the tray icon and the live stats bar near the taskbar
 
-Smaller build (needs [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)):
+These links always track the latest successful build from `main` ([continuous release](https://github.com/mohantechnology/live-stats/releases/tag/continuous)).
+
+**Smaller build** (needs [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)):
 
 - [Framework-dependent ZIP](https://github.com/mohantechnology/live-stats/releases/download/continuous/TaskbarLiveStats-win-x64-fd.zip)
 
-Versioned releases: [Releases](https://github.com/mohantechnology/live-stats/releases) (created when you push a `v*` tag).
+Versioned releases: [Releases](https://github.com/mohantechnology/live-stats/releases)
 
-### How to view artifacts on GitHub
+### Other ways to get the build
 
-**Option A — Continuous release (easiest for users)**  
-Open [Releases → Continuous build](https://github.com/mohantechnology/live-stats/releases/tag/continuous) and download the `.zip` / `.exe` assets.
-
-**Option B — From an Actions run**  
-1. Open [Actions → Build Windows portable](https://github.com/mohantechnology/live-stats/actions/workflows/build-release.yml)  
-2. Click the latest green run on `main`  
-3. Scroll to the bottom **Artifacts** section  
-4. Download **TaskbarLiveStats-win-x64-portable** (zip of the EXE)
-
-Actions artifacts expire after 30 days. The continuous release links above stay available and are what the README points to.
+- **Releases page:** [Continuous build assets](https://github.com/mohantechnology/live-stats/releases/tag/continuous)
+- **Actions artifacts:** [Build Windows portable](https://github.com/mohantechnology/live-stats/actions/workflows/build-release.yml) → open the latest green run → **Artifacts** at the bottom (kept for 30 days)
 
 ## Requirements
 
-- Windows 10/11 (x64)
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) to build
-- For framework-dependent publish: [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
+- **Windows 10 or 11** (x64)
+- Portable download: nothing else
+- Framework-dependent download: [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 
-## Install .NET 10 SDK
+Settings are saved under `%AppData%\TaskbarLiveStats\`.
 
-From PowerShell:
+---
+
+## Build from source (developers)
+
+### Install .NET 10 SDK
 
 ```powershell
 winget install Microsoft.DotNet.SDK.10
 ```
 
-Open a new terminal after install, then confirm the SDK:
+Confirm:
 
 ```powershell
 dotnet --version
 ```
 
-The Desktop Runtime is included with the SDK. For a machine that only runs the framework-dependent build:
-
-```powershell
-winget install Microsoft.DotNet.DesktopRuntime.10
-```
-
-## Build and run (development)
-
-From the repo root (`d:\dev_software\taskbar-live-stats`):
-
-```powershell
-dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows
-dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows --no-build
-```
-
-Or build and run in one step:
+### Run
 
 ```powershell
 dotnet run --project .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release -f net10.0-windows
 ```
 
-Stop the app from the tray icon (right-click → Exit) before rebuilding if the EXE is locked.
+Stop the app from the tray (right-click → Exit) before rebuilding if the EXE is locked.
 
-## Publish (portable EXE)
+### Publish portable EXE
 
-Self-contained single-file (no separate .NET install needed on the target PC):
+Self-contained (no .NET on the target PC):
 
 ```powershell
 dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release /p:PublishProfile=Trimmed
 ```
 
-Output:
+Output: `.\publish\TaskbarLiveStats.exe`
 
-```text
-.\publish\TaskbarLiveStats.exe
-```
-
-Run it:
-
-```powershell
-.\publish\TaskbarLiveStats.exe
-```
-
-Smaller build that requires the .NET 10 Desktop Runtime:
+Framework-dependent (smaller; needs Desktop Runtime):
 
 ```powershell
 dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj -c Release /p:PublishProfile=FrameworkDependent
 ```
 
-Output:
+Output: `.\publish-fd\TaskbarLiveStats.exe`
 
-```text
-.\publish-fd\TaskbarLiveStats.exe
-```
-
-## How GPU % is calculated
+### How GPU % is calculated
 
 - Source: Windows PDH `\GPU Engine(*)\Utilization Percentage`
-- Per-process engine samples are **summed per physical engine**, then the **busiest engine** on the primary GPU is used (same approach as Task Manager)
-- Percentages are **rounded up** (ceiling) so small load does not display as `0%`
-- Failed/empty PDH reads keep the last good GPU value instead of flashing zero
+- Per-process engine samples are summed per physical engine; the **busiest engine** on the primary GPU is used (same idea as Task Manager)
+- Values are rounded up so tiny load does not show as `0%`
+- Failed reads keep the last good value instead of flashing zero
