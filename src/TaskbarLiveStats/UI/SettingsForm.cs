@@ -376,13 +376,11 @@ internal sealed class SettingsForm : AntdUI.Window
             _startWithWindows.CheckedChanged += (_, _) =>
             {
                 bool on = _startWithWindows.Checked;
-                bool changed = (_hideOnAutostartRow?.Visible ?? false) != on
-                    || (_hideOnAutostartHint?.Visible ?? false) != on;
                 if (_hideOnAutostartRow != null)
                     _hideOnAutostartRow.Visible = on;
                 if (_hideOnAutostartHint != null)
                     _hideOnAutostartHint.Visible = on;
-                if (changed && _chromeReady)
+                if (_chromeReady)
                     LayoutActiveSection(preserveScroll: true, refreshRememberedScroll: false);
             };
         }
