@@ -15,6 +15,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly TaskbarWatcher _watcher;
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _alwaysOnTopItem;
     private readonly ToolStripMenuItem _showHideItem;
     private readonly SettingsStore _store = new();
     private readonly HotkeyHook _hotkey = new();
@@ -60,6 +61,22 @@ internal sealed class TrayAppContext : ApplicationContext
             Persist();
         };
 
+        _alwaysOnTopItem = new ToolStripMenuItem("Always on top")
+        {
+            Checked = _settings.AlwaysOnTop,
+            CheckOnClick = true
+        };
+        _alwaysOnTopItem.CheckedChanged += (_, _) =>
+        {
+            if (_settings.AlwaysOnTop == _alwaysOnTopItem.Checked)
+                return;
+            _settings.AlwaysOnTop = _alwaysOnTopItem.Checked;
+            _window.ApplySettings(_settings, forceLayout: false);
+            Persist();
+            if (!_userHidden)
+                SyncOverlayVisibility();
+        };
+
         _showHideItem = new ToolStripMenuItem("Hide live stats")
         {
             ShortcutKeyDisplayString = HotkeyHook.Format(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey)
@@ -71,6 +88,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _menu = new ContextMenuStrip();
         _menu.Items.Add("Settings…", null, (_, _) => OpenSettings());
         _menu.Items.Add(_showHideItem);
+        _menu.Items.Add(_alwaysOnTopItem);
         _menu.Items.Add("Open Task Manager", null, (_, _) => OpenTaskManager());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_startupItem);
@@ -105,6 +123,8 @@ internal sealed class TrayAppContext : ApplicationContext
             _showHideItem.Text = _userHidden ? "Show live stats" : "Hide live stats";
             _showHideItem.ShortcutKeyDisplayString =
                 HotkeyHook.Format(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey);
+            if (_alwaysOnTopItem.Checked != _settings.AlwaysOnTop)
+                _alwaysOnTopItem.Checked = _settings.AlwaysOnTop;
         };
 
         _window.SettingsChanged += () =>
@@ -144,7 +164,7 @@ internal sealed class TrayAppContext : ApplicationContext
                 return;
             }
             SyncOverlayVisibility();
-            if (!_fullscreenActive || _settings.ShowOnFullscreen)
+            if (!_fullscreenActive || !StayVisibleOverFullscreen)
                 _window.Reembed(_watcher.Current);
         };
 
@@ -152,7 +172,7 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             if (_userHidden || _settings.PlacementMode != PlacementMode.Taskbar)
                 return;
-            if (_fullscreenActive && _settings.ShowOnFullscreen)
+            if (_fullscreenActive && StayVisibleOverFullscreen)
                 return;
             if (info.IsVisible)
                 _window.ApplyTaskbar(info);
@@ -231,6 +251,13 @@ internal sealed class TrayAppContext : ApplicationContext
     }
 
     /// <summary>
+    /// Always on top keeps the overlay visible and topmost even when
+    /// "Show on full screen" is off.
+    /// </summary>
+    private bool StayVisibleOverFullscreen =>
+        _settings.ShowOnFullscreen || _settings.AlwaysOnTop;
+
+    /// <summary>
     /// Applies taskbar visibility, fullscreen hide, and optional fullscreen float.
     /// Does not clear a user hotkey hide.
     /// </summary>
@@ -241,7 +268,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
         _window.SetUserSuppressed(false);
 
-        if (_fullscreenActive && !_settings.ShowOnFullscreen)
+        if (_fullscreenActive && !StayVisibleOverFullscreen)
         {
             _window.SetFullscreenFloat(false);
             _window.SetVisible(false);
@@ -249,7 +276,7 @@ internal sealed class TrayAppContext : ApplicationContext
             return;
         }
 
-        if (_fullscreenActive && _settings.ShowOnFullscreen)
+        if (_fullscreenActive && StayVisibleOverFullscreen)
         {
             _window.SetFullscreenFloat(true);
             _window.SetVisible(true);
@@ -305,6 +332,8 @@ internal sealed class TrayAppContext : ApplicationContext
         StartupHelper.SetEnabled(_settings.StartWithWindows);
         if (_startupItem.Checked != _settings.StartWithWindows)
             _startupItem.Checked = _settings.StartWithWindows;
+        if (_alwaysOnTopItem.Checked != _settings.AlwaysOnTop)
+            _alwaysOnTopItem.Checked = _settings.AlwaysOnTop;
 
         _metrics.IntervalMs = _settings.UpdateIntervalMs;
         _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory, _settings.SaveComputerUseHistory);

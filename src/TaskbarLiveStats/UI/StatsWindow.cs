@@ -572,8 +572,8 @@ internal sealed class StatsWindow : Form
     private void RaiseFloatingZOrder()
     {
         if (HandlePublic == IntPtr.Zero) return;
-        // Fullscreen override must stay above exclusive / borderless apps.
-        bool topmost = _settings.AlwaysOnTop || _overlayFloat;
+        // Floating surface stays topmost; AlwaysOnTop also forces it (e.g. after fullscreen float).
+        bool topmost = _settings.AlwaysOnTop || UsesFloatingSurface;
         IntPtr after = topmost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST;
         NativeMethods.SetWindowPos(
             Handle, after, 0, 0, 0, 0,

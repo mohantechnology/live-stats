@@ -390,7 +390,7 @@ internal sealed class SettingsForm : AntdUI.Window
         var fullscreen = NewCard();
         fullscreen.Add(Heading("Fullscreen"));
         fullscreen.Add(SwitchRow("Show on full screen", _draft.ShowOnFullscreen, out _showOnFullscreen));
-        fullscreen.Add(Hint("When on, live stats stay visible over fullscreen apps. When off, the overlay hides while any app is fullscreen.", 48));
+        fullscreen.Add(Hint("When on, live stats stay visible over fullscreen apps. When off, the overlay hides while any app is fullscreen (unless Always on top is checked).", 48));
         page.Add(fullscreen);
 
         var updates = NewCard();
@@ -524,7 +524,8 @@ internal sealed class SettingsForm : AntdUI.Window
         layout.Add(EdgeRow());
         layout.Add(Heading("Opacity"));
         layout.Add(OpacityRow());
-        layout.Add(SwitchRow("Always on top (floating)", _draft.AlwaysOnTop, out _alwaysOnTop));
+        layout.Add(SwitchRow("Always on top", _draft.AlwaysOnTop, out _alwaysOnTop));
+        layout.Add(Hint("Keeps live stats above other windows. Also stays visible over fullscreen apps even when Show on full screen is off.", 48));
         var reset = MakeButton("Reset position", AntdUI.TTypeMini.Default);
         reset.Size = new Size(150, 34);
         reset.Click += (_, _) =>
@@ -644,7 +645,7 @@ internal sealed class SettingsForm : AntdUI.Window
         bool floating = _placeSeg?.SelectIndex == 1;
         if (_edgePreset != null) _edgePreset.Enabled = floating;
         if (_opacity != null) _opacity.Enabled = floating;
-        if (_alwaysOnTop != null) _alwaysOnTop.Enabled = floating;
+        // Always on top applies in floating mode and as a fullscreen override from the tray menu.
     }
 
     private void PullFromUi()

@@ -369,11 +369,16 @@ internal sealed class AppSettings
     public int FloatingY { get; set; } = int.MinValue;
     public int TaskbarOffsetX { get; set; }
     public double Opacity { get; set; } = 1.0;
-    public bool AlwaysOnTop { get; set; } = true;
+    /// <summary>
+    /// When true, keep the overlay topmost and visible over other windows,
+    /// including fullscreen apps (overrides ShowOnFullscreen when that is off).
+    /// </summary>
+    public bool AlwaysOnTop { get; set; }
 
     /// <summary>
     /// When true, keep the live stats visible over fullscreen apps.
-    /// When false (default), hide the overlay while any app is fullscreen.
+    /// When false (default), hide the overlay while any app is fullscreen,
+    /// unless AlwaysOnTop is on.
     /// </summary>
     public bool ShowOnFullscreen { get; set; }
 
