@@ -24,10 +24,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 10
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          # Project TFM is net10.0-windows; allow newest SDK that can target it.
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       - name: Read version
         id: version
@@ -38,21 +41,26 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.0.0" }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version: $version"
+          dotnet --info
 
-      - name: Restore
-        run: dotnet restore .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+      - name: Restore (include win-x64 RID)
+        run: >
+          dotnet restore .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+          -r win-x64
 
       - name: Build
         run: >
           dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
           -c Release
           -f net10.0-windows
+          -r win-x64
           --no-restore
 
       - name: Publish portable (self-contained single-file)
         run: >
           dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
           -c Release
+          -r win-x64
           /p:PublishProfile=Trimmed
           --no-restore
 
@@ -60,8 +68,8 @@ jobs:
         run: >
           dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
           -c Release
-          /p:PublishProfile=FrameworkDependent
           -r win-x64
+          /p:PublishProfile=FrameworkDependent
           --no-restore
 
       - name: Stage artifacts

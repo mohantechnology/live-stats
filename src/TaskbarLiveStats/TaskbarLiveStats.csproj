@@ -12,6 +12,8 @@
     <AssemblyName>TaskbarLiveStats</AssemblyName>
     <Version>1.0.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Needed so restore/publish assets include win-x64 (CI PublishProfile + local publish). -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <!-- ScottPlot → SkiaSharp.Views.WindowsForms still ships net462 OpenTK assets;
          NU1701 is expected on net*-windows and does not affect the WinForms plots we use. -->
     <NoWarn>$(NoWarn);NU1701</NoWarn>
