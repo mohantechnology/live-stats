@@ -2,6 +2,20 @@
 
 Live CPU, memory, GPU, network, and disk stats embedded in the Windows taskbar.
 
+## Download (Windows)
+
+Every push to `main` builds downloadable Windows artifacts in GitHub Actions:
+
+1. Open [Actions](https://github.com/mohantechnology/live-stats/actions)
+2. Open the latest **Build Windows portable** run on `main`
+3. Download **TaskbarLiveStats-win-x64-portable** (recommended)
+
+That package is a **self-contained single-file EXE** — unzip (or use the `.exe` directly) and run on Windows 10/11 x64. No separate .NET install is required.
+
+A smaller **framework-dependent** artifact is also uploaded; that one needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+
+Tagged releases (`v*`) also publish the same files on the repo [Releases](https://github.com/mohantechnology/live-stats/releases) page.
+
 ## Requirements
 
 - Windows 10/11 (x64)

@@ -1,0 +1,145 @@
+name: Build Windows portable
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Publish win-x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$proj = Get-Content .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+          $version = $proj.Project.PropertyGroup.Version | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.0.0" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Version: $version"
+
+      - name: Restore
+        run: dotnet restore .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+
+      - name: Build
+        run: >
+          dotnet build .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+          -c Release
+          -f net10.0-windows
+          --no-restore
+
+      - name: Publish portable (self-contained single-file)
+        run: >
+          dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+          -c Release
+          /p:PublishProfile=Trimmed
+          --no-restore
+
+      - name: Publish framework-dependent single-file
+        run: >
+          dotnet publish .\src\TaskbarLiveStats\TaskbarLiveStats.csproj
+          -c Release
+          /p:PublishProfile=FrameworkDependent
+          -r win-x64
+          --no-restore
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $stamp = Get-Date -Format "yyyyMMdd"
+
+          New-Item -ItemType Directory -Force -Path .\artifacts\portable, .\artifacts\framework-dependent | Out-Null
+
+          Copy-Item .\publish\TaskbarLiveStats.exe `
+            .\artifacts\portable\TaskbarLiveStats.exe
+
+          Copy-Item .\publish-fd\TaskbarLiveStats.exe `
+            .\artifacts\framework-dependent\TaskbarLiveStats.exe
+
+          Compress-Archive -Path .\artifacts\portable\* `
+            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-portable-v$version.zip" -Force
+
+          Compress-Archive -Path .\artifacts\framework-dependent\* `
+            -DestinationPath ".\artifacts\TaskbarLiveStats-win-x64-fd-v$version.zip" -Force
+
+          # Keep raw EXE names stable for Actions artifact browsing.
+          Copy-Item .\artifacts\portable\TaskbarLiveStats.exe `
+            ".\artifacts\TaskbarLiveStats-win-x64-portable-v$version-$stamp-$sha.exe"
+          Copy-Item .\artifacts\framework-dependent\TaskbarLiveStats.exe `
+            ".\artifacts\TaskbarLiveStats-win-x64-fd-v$version-$stamp-$sha.exe"
+
+          Get-ChildItem .\artifacts -File | Format-Table Name, Length
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TaskbarLiveStats-win-x64-portable
+          path: |
+            artifacts/TaskbarLiveStats-win-x64-portable-v*.zip
+            artifacts/TaskbarLiveStats-win-x64-portable-v*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload framework-dependent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TaskbarLiveStats-win-x64-framework-dependent
+          path: |
+            artifacts/TaskbarLiveStats-win-x64-fd-v*.zip
+            artifacts/TaskbarLiveStats-win-x64-fd-v*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TaskbarLiveStats-win-x64-portable
+          path: release-assets
+
+      - name: Download framework-dependent artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TaskbarLiveStats-win-x64-framework-dependent
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/*.zip
+            release-assets/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
