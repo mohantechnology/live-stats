@@ -288,26 +288,25 @@ internal static class SettingsSelfTest
             var dayBuckets = UsageHistoryStore.Read(path, day);
             if (dayBuckets.Length != 12)
                 failures.Add($"Day should fill 12 two-hour slots, got {dayBuckets.Length}.");
-            if (UsageHistoryStore.Resolve(UsageRange.Week, at, null, null).BucketSeconds != 86_400)
-                failures.Add("Week should stay on daily buckets.");
-            if (UsageHistoryStore.Resolve(UsageRange.Month, at, null, null).BucketSeconds != 86_400)
-                failures.Add("Month should stay on daily buckets.");
-            var months3 = UsageHistoryStore.Resolve(UsageRange.Months3, at, null, null);
-            if (months3.BucketSeconds != 86_400 || (at.Date - months3.LocalStart).TotalDays < 89.9)
-                failures.Add("3 months should use daily buckets over about 90 days.");
-            var months6 = UsageHistoryStore.Resolve(UsageRange.Months6, at, null, null);
-            if (months6.BucketSeconds != 86_400 || (at.Date - months6.LocalStart).TotalDays < 179.9)
-                failures.Add("6 months should use daily buckets over about 180 days.");
-            if (UsageHistoryStore.Resolve(UsageRange.Year, at, null, null).BucketSeconds != 86_400)
-                failures.Add("Year should stay on daily buckets.");
+
+            ExpectInclusiveDays(failures, UsageRange.Week, at, 7, "Week");
+            ExpectInclusiveDays(failures, UsageRange.Month, at, 30, "Month");
+            ExpectInclusiveDays(failures, UsageRange.Months3, at, 90, "3 months");
+            ExpectInclusiveDays(failures, UsageRange.Months6, at, 180, "6 months");
+            ExpectInclusiveDays(failures, UsageRange.Year, at, 365, "Year");
+
             var customDay = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date, at.Date);
             if (customDay.BucketSeconds != 7200)
                 failures.Add("Custom ranges of one day or less should use 2-hour buckets.");
             if ((customDay.LocalEnd - customDay.LocalStart).TotalHours < 23.9)
                 failures.Add("Custom single-day should cover the full selected day.");
-            var customMulti = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-7), at.Date);
+            var customMulti = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date.AddDays(-6), at.Date);
             if (customMulti.BucketSeconds != 86_400)
                 failures.Add("Custom ranges longer than one day should use daily buckets.");
+            if (Math.Abs((customMulti.LocalEnd - customMulti.LocalStart).TotalDays - 7) > 0.01)
+                failures.Add("Custom 7 inclusive dates should span 7 calendar days.");
+
+            AssertHistorySummarization(failures, path, at);
         }
         catch (Exception ex)
         {
@@ -319,6 +318,147 @@ internal static class SettingsSelfTest
             {
                 try { if (File.Exists(path + suffix)) File.Delete(path + suffix); } catch { /* temp cleanup */ }
             }
+        }
+    }
+
+    private static void ExpectInclusiveDays(List<string> failures, UsageRange range, DateTime at, int days, string name)
+    {
+        var window = UsageHistoryStore.Resolve(range, at, null, null);
+        if (window.BucketSeconds != 86_400)
+            failures.Add($"{name} should stay on daily buckets.");
+        if (window.LocalStart != at.Date.AddDays(-(days - 1)))
+            failures.Add($"{name} should start {days - 1} calendar days before today.");
+        int counted = 0;
+        for (DateTime cursor = window.LocalStart.Date; cursor < window.LocalEnd; cursor = cursor.AddDays(1))
+            counted++;
+        if (counted != days)
+            failures.Add($"{name} should cover {days} calendar days, got {counted}.");
+    }
+
+    private static void AssertHistorySummarization(List<string> failures, string path, DateTime at)
+    {
+        // Seed one byte per minute across 10 local days so every filter has known totals.
+        using (var store = new UsageHistoryStore(path))
+        {
+            store.SetRecording(true, true, true);
+            for (int dayOffset = -9; dayOffset <= 0; dayOffset++)
+            {
+                DateTime day = at.Date.AddDays(dayOffset);
+                int endMinute = dayOffset == 0 ? at.Hour * 60 + at.Minute : 24 * 60;
+                for (int minute = 0; minute < endMinute; minute++)
+                {
+                    DateTime local = day.AddMinutes(minute);
+                    DateTime utc = TimeZoneInfo.ConvertTimeToUtc(
+                        DateTime.SpecifyKind(local, DateTimeKind.Unspecified),
+                        TimeZoneInfo.Local);
+                    store.Add(utc, 1, 2, 3, 4);
+                }
+            }
+
+            store.Flush();
+        }
+
+        ExpectConserved(failures, path, UsageRange.Minutes15, at, null, null, "15 min");
+        ExpectConserved(failures, path, UsageRange.Hour, at, null, null, "1 hour");
+        ExpectConserved(failures, path, UsageRange.Hours5, at, null, null, "5 hours");
+        ExpectConserved(failures, path, UsageRange.Day, at, null, null, "Day");
+        ExpectConserved(failures, path, UsageRange.Week, at, null, null, "Week");
+        ExpectConserved(failures, path, UsageRange.Month, at, null, null, "Month");
+        ExpectConserved(failures, path, UsageRange.Months3, at, null, null, "3 months");
+        ExpectConserved(failures, path, UsageRange.Months6, at, null, null, "6 months");
+        ExpectConserved(failures, path, UsageRange.Year, at, null, null, "Year");
+        ExpectConserved(failures, path, UsageRange.Custom, at, at.Date, at.Date, "Custom day");
+        ExpectConserved(failures, path, UsageRange.Custom, at, at.Date.AddDays(-6), at.Date, "Custom week");
+
+        var dayWindow = UsageHistoryStore.Resolve(UsageRange.Day, at, null, null);
+        var dayBuckets = UsageHistoryStore.Read(path, dayWindow);
+        if (dayBuckets.Length != 12)
+            failures.Add($"Day summarization should keep 12 two-hour bars, got {dayBuckets.Length}.");
+        ulong daySend = 0;
+        foreach (var bucket in dayBuckets)
+            daySend += bucket.NetSend;
+        int expectedDayMinutes = at.Hour * 60 + at.Minute;
+        if (daySend != (ulong)expectedDayMinutes)
+            failures.Add($"Day total was {daySend} minutes of data, expected {expectedDayMinutes}.");
+
+        var weekWindow = UsageHistoryStore.Resolve(UsageRange.Week, at, null, null);
+        var weekBuckets = UsageHistoryStore.Read(path, weekWindow);
+        if (weekBuckets.Length != 7)
+            failures.Add($"Week summarization should keep 7 daily bars, got {weekBuckets.Length}.");
+        ulong weekSend = 0;
+        foreach (var bucket in weekBuckets)
+            weekSend += bucket.NetSend;
+        int expectedWeekMinutes = 6 * 24 * 60 + expectedDayMinutes;
+        if (weekSend != (ulong)expectedWeekMinutes)
+            failures.Add($"Week total was {weekSend} minutes of data, expected {expectedWeekMinutes}.");
+    }
+
+    private static void ExpectConserved(
+        List<string> failures,
+        string path,
+        UsageRange range,
+        DateTime at,
+        DateTime? from,
+        DateTime? to,
+        string name)
+    {
+        var window = UsageHistoryStore.Resolve(range, at, from, to);
+        ulong bucketSend = 0, bucketRecv = 0, bucketRead = 0, bucketWrite = 0;
+        foreach (var bucket in UsageHistoryStore.Read(path, window))
+        {
+            bucketSend += bucket.NetSend;
+            bucketRecv += bucket.NetRecv;
+            bucketRead += bucket.DiskRead;
+            bucketWrite += bucket.DiskWrite;
+        }
+
+        ulong rawSend = 0, rawRecv = 0, rawRead = 0, rawWrite = 0;
+        try
+        {
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+                new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+                {
+                    DataSource = path,
+                    Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly
+                }.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT COALESCE(SUM(net_send),0), COALESCE(SUM(net_recv),0),
+                       COALESCE(SUM(disk_read),0), COALESCE(SUM(disk_write),0)
+                FROM usage_minute
+                WHERE minute_utc >= $start AND minute_utc < $end
+                """;
+            long ToUnix(DateTime local)
+            {
+                var utc = TimeZoneInfo.ConvertTimeToUtc(
+                    DateTime.SpecifyKind(local, DateTimeKind.Unspecified),
+                    TimeZoneInfo.Local);
+                return new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeSeconds();
+            }
+
+            command.Parameters.AddWithValue("$start", ToUnix(window.LocalStart));
+            command.Parameters.AddWithValue("$end", ToUnix(window.LocalEnd));
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                rawSend = (ulong)reader.GetInt64(0);
+                rawRecv = (ulong)reader.GetInt64(1);
+                rawRead = (ulong)reader.GetInt64(2);
+                rawWrite = (ulong)reader.GetInt64(3);
+            }
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"{name} raw sum failed: {ex.Message}");
+            return;
+        }
+
+        if (bucketSend != rawSend || bucketRecv != rawRecv || bucketRead != rawRead || bucketWrite != rawWrite)
+        {
+            failures.Add(
+                $"{name} summarization lost data: buckets {bucketSend}/{bucketRecv}/{bucketRead}/{bucketWrite}, "
+                + $"raw {rawSend}/{rawRecv}/{rawRead}/{rawWrite}.");
         }
     }
 

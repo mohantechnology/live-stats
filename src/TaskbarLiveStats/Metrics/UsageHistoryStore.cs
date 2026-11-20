@@ -302,23 +302,25 @@ internal sealed class UsageHistoryStore : IDisposable
                 bucket = 1800;
                 break;
             case UsageRange.Week:
-                start = now.Date.AddDays(-7);
+                // Today plus the previous 6 calendar days (7 daily bars).
+                start = now.Date.AddDays(-6);
                 bucket = 86_400;
                 break;
             case UsageRange.Month:
-                start = now.Date.AddDays(-30);
+                // Today plus the previous 29 calendar days (30 daily bars).
+                start = now.Date.AddDays(-29);
                 bucket = 86_400;
                 break;
             case UsageRange.Months3:
-                start = now.Date.AddDays(-90);
+                start = now.Date.AddDays(-89);
                 bucket = 86_400;
                 break;
             case UsageRange.Months6:
-                start = now.Date.AddDays(-180);
+                start = now.Date.AddDays(-179);
                 bucket = 86_400;
                 break;
             case UsageRange.Year:
-                start = now.Date.AddDays(-365);
+                start = now.Date.AddDays(-364);
                 bucket = 86_400;
                 break;
             case UsageRange.Day:
@@ -359,35 +361,46 @@ internal sealed class UsageHistoryStore : IDisposable
 
         try
         {
-            int offset = (int)TimeZoneInfo.Local.GetUtcOffset(window.LocalStart).TotalSeconds;
             long startUnix = ToUnix(window.LocalStart);
             long endUnix = ToUnix(window.LocalEnd);
+            // Bucket each stored minute in local time so Day/Week/Month totals match the
+            // raw minute sum (fixed SQL UTC offset drifts across DST and can drop bars).
             var totals = new Dictionary<long, UsageBucket>();
             using (var connection = OpenRead(path))
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT ((minute_utc + $off) / $bucket) * $bucket - $off AS bucket_utc,
-                           SUM(net_send), SUM(net_recv), SUM(disk_read), SUM(disk_write)
+                    SELECT minute_utc, net_send, net_recv, disk_read, disk_write
                     FROM usage_minute
                     WHERE minute_utc >= $start AND minute_utc < $end
-                    GROUP BY bucket_utc
-                    ORDER BY bucket_utc
                     """;
-                command.Parameters.AddWithValue("$off", offset);
-                command.Parameters.AddWithValue("$bucket", window.BucketSeconds);
                 command.Parameters.AddWithValue("$start", startUnix);
                 command.Parameters.AddWithValue("$end", endUnix);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    long bucketUtc = reader.GetInt64(0);
-                    totals[bucketUtc] = new UsageBucket(
-                        FromUnix(bucketUtc),
-                        ReadUlong(reader, 1),
-                        ReadUlong(reader, 2),
-                        ReadUlong(reader, 3),
-                        ReadUlong(reader, 4));
+                    DateTime bucketStart = AlignDown(FromUnix(reader.GetInt64(0)), window.BucketSeconds);
+                    if (bucketStart < window.LocalStart || bucketStart >= window.LocalEnd)
+                        continue;
+                    long key = ToUnix(bucketStart);
+                    ulong send = ReadUlong(reader, 1);
+                    ulong recv = ReadUlong(reader, 2);
+                    ulong read = ReadUlong(reader, 3);
+                    ulong write = ReadUlong(reader, 4);
+                    if (totals.TryGetValue(key, out var existing))
+                    {
+                        totals[key] = existing with
+                        {
+                            NetSend = existing.NetSend + send,
+                            NetRecv = existing.NetRecv + recv,
+                            DiskRead = existing.DiskRead + read,
+                            DiskWrite = existing.DiskWrite + write
+                        };
+                    }
+                    else
+                    {
+                        totals[key] = new UsageBucket(bucketStart, send, recv, read, write);
+                    }
                 }
             }
 
@@ -399,7 +412,7 @@ internal sealed class UsageHistoryStore : IDisposable
                 filled.Add(totals.TryGetValue(key, out var hit)
                     ? hit with { LocalStart = cursor }
                     : new UsageBucket(cursor, 0, 0, 0, 0));
-                cursor = cursor.AddSeconds(window.BucketSeconds);
+                cursor = NextBucketStart(cursor, window.BucketSeconds);
             }
 
             return filled.ToArray();
@@ -417,7 +430,6 @@ internal sealed class UsageHistoryStore : IDisposable
 
         try
         {
-            int offset = (int)TimeZoneInfo.Local.GetUtcOffset(window.LocalStart).TotalSeconds;
             long startUnix = ToUnix(window.LocalStart);
             long endUnix = ToUnix(window.LocalEnd);
             var totals = new Dictionary<long, int>();
@@ -425,23 +437,23 @@ internal sealed class UsageHistoryStore : IDisposable
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT ((minute_utc + $off) / $bucket) * $bucket - $off AS bucket_utc,
-                           SUM(awake_seconds)
+                    SELECT minute_utc, awake_seconds
                     FROM uptime_minute
                     WHERE minute_utc >= $start AND minute_utc < $end
-                    GROUP BY bucket_utc
-                    ORDER BY bucket_utc
                     """;
-                command.Parameters.AddWithValue("$off", offset);
-                command.Parameters.AddWithValue("$bucket", window.BucketSeconds);
                 command.Parameters.AddWithValue("$start", startUnix);
                 command.Parameters.AddWithValue("$end", endUnix);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    long bucketUtc = reader.GetInt64(0);
+                    DateTime bucketStart = AlignDown(FromUnix(reader.GetInt64(0)), window.BucketSeconds);
+                    if (bucketStart < window.LocalStart || bucketStart >= window.LocalEnd)
+                        continue;
+                    long key = ToUnix(bucketStart);
                     int seconds = reader.IsDBNull(1) ? 0 : (int)Math.Clamp(reader.GetInt64(1), 0, int.MaxValue);
-                    totals[bucketUtc] = seconds;
+                    totals[key] = totals.TryGetValue(key, out int existing)
+                        ? (int)Math.Min((long)existing + seconds, int.MaxValue)
+                        : seconds;
                 }
             }
 
@@ -451,7 +463,7 @@ internal sealed class UsageHistoryStore : IDisposable
             {
                 long key = ToUnix(cursor);
                 filled.Add(new UptimeBucket(cursor, totals.TryGetValue(key, out int seconds) ? seconds : 0));
-                cursor = cursor.AddSeconds(window.BucketSeconds);
+                cursor = NextBucketStart(cursor, window.BucketSeconds);
             }
 
             return filled.ToArray();
@@ -631,6 +643,9 @@ internal sealed class UsageHistoryStore : IDisposable
 
     private static DateTime AlignDown(DateTime local, int bucketSeconds)
     {
+        if (bucketSeconds == 86_400)
+            return DateTime.SpecifyKind(local.Date, DateTimeKind.Unspecified);
+
         long unix = ToUnix(local);
         int offset = (int)TimeZoneInfo.Local.GetUtcOffset(local).TotalSeconds;
         long shifted = unix + offset;
@@ -638,6 +653,15 @@ internal sealed class UsageHistoryStore : IDisposable
             ? shifted / bucketSeconds * bucketSeconds
             : (long)Math.Floor(shifted / (double)bucketSeconds) * bucketSeconds;
         return FromUnix(aligned - offset);
+    }
+
+    /// <summary>Advance one chart bar. Daily bars follow calendar midnights.</summary>
+    private static DateTime NextBucketStart(DateTime cursor, int bucketSeconds)
+    {
+        DateTime next = bucketSeconds == 86_400
+            ? cursor.Date.AddDays(1)
+            : cursor.AddSeconds(bucketSeconds);
+        return next > cursor ? next : cursor.AddMinutes(1);
     }
 
     private static long ToUnix(DateTime local)
