@@ -135,8 +135,8 @@ internal static class SettingsSelfTest
     private static void AssertTotals(List<string> failures)
     {
         var defaults = AppSettings.CreateDefaults();
-        if (!defaults.SaveUsageHistory || !defaults.SaveNetworkHistory || !defaults.SaveDiskHistory)
-            failures.Add("Network and disk history should be on by default.");
+        if (!defaults.SaveUsageHistory || !defaults.SaveNetworkHistory || !defaults.SaveDiskHistory || !defaults.SaveComputerUseHistory)
+            failures.Add("Network, disk, and computer-use history should be on by default.");
         if (defaults.TotalSince != TotalSince.Restart)
             failures.Add("Total since should default to the since-reboot counter.");
         if (!defaults.TotalUsage.NetSend || !defaults.TotalUsage.NetRecv || !defaults.TotalUsage.DiskRead || !defaults.TotalUsage.DiskWrite)
@@ -148,7 +148,7 @@ internal static class SettingsSelfTest
             Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
         };
         var legacy = JsonSerializer.Deserialize<AppSettings>("{}", options);
-        if (legacy == null || !legacy.SaveUsageHistory || !legacy.SaveNetworkHistory || !legacy.SaveDiskHistory || legacy.TotalUsage?.DiskRead != true)
+        if (legacy == null || !legacy.SaveUsageHistory || !legacy.SaveNetworkHistory || !legacy.SaveDiskHistory || !legacy.SaveComputerUseHistory || legacy.TotalUsage?.DiskRead != true)
             failures.Add("Old settings files should keep total usage and history saving on.");
 
         string settingsPath = Path.Combine(Path.GetTempPath(), "tls-settings-" + Guid.NewGuid().ToString("N") + ".json");
@@ -158,6 +158,9 @@ internal static class SettingsSelfTest
             var migrated = new SettingsStore(settingsPath).Load(out bool firstRun);
             if (firstRun || migrated.SaveNetworkHistory || migrated.SaveDiskHistory)
                 failures.Add("Turning history off in an old settings file should turn both blocks off.");
+            // Computer-use is a new key; absent means default on unless explicitly set.
+            if (!migrated.SaveComputerUseHistory)
+                failures.Add("Missing computer-use history key should stay on by default.");
         }
         catch (Exception ex)
         {
@@ -244,11 +247,11 @@ internal static class SettingsSelfTest
             var now = DateTime.UtcNow;
             using (var store = new UsageHistoryStore(path))
             {
-                store.SetRecording(true, true);
+                store.SetRecording(true, true, true);
                 store.Add(now, 1000, 2000, 3000, 4000);
-                store.SetRecording(false, false);
+                store.SetRecording(false, false, false);
                 store.Add(now, 9, 9, 9, 9);
-                store.SetRecording(true, false);
+                store.SetRecording(true, false, true);
                 store.Add(now, 5, 6, 7, 8);
             }
 
@@ -287,6 +290,12 @@ internal static class SettingsSelfTest
                 failures.Add("Week should stay on daily buckets.");
             if (UsageHistoryStore.Resolve(UsageRange.Month, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Month should stay on daily buckets.");
+            var months3 = UsageHistoryStore.Resolve(UsageRange.Months3, at, null, null);
+            if (months3.BucketSeconds != 86_400 || (at.Date - months3.LocalStart).TotalDays < 89.9)
+                failures.Add("3 months should use daily buckets over about 90 days.");
+            var months6 = UsageHistoryStore.Resolve(UsageRange.Months6, at, null, null);
+            if (months6.BucketSeconds != 86_400 || (at.Date - months6.LocalStart).TotalDays < 179.9)
+                failures.Add("6 months should use daily buckets over about 180 days.");
             if (UsageHistoryStore.Resolve(UsageRange.Year, at, null, null).BucketSeconds != 86_400)
                 failures.Add("Year should stay on daily buckets.");
             var customDay = UsageHistoryStore.Resolve(UsageRange.Custom, at, at.Date, at.Date);
@@ -544,26 +553,29 @@ internal static class SettingsSelfTest
         AssertCaptionInside(FindLabel(form, "Hide when idle"), failures, state);
         AssertCaptionInside(FindLabel(form, "Show"), failures, state);
 
-        foreach (string label in new[] { "Network history", "Disk history" })
+        form.ShowSection("usage");
+        foreach (string heading in new[] { "Network usage", "Disk usage", "Computer usage" })
         {
-            var historySwitch = FindLabel(form, label);
-            if (historySwitch == null || !PageHasTitle(historySwitch, "Monitoring"))
-                failures.Add($"{label} should sit on Monitoring ({state}).");
+            var block = FindLabel(form, heading);
+            if (block == null || !PageHasTitle(block, "Usage"))
+                failures.Add($"{heading} should sit on Usage ({state}).");
         }
 
-        foreach (string item in new[] { "15 min", "1 hour", "5 hours", "Day", "Week", "Month", "Year", "Custom" })
+        foreach (string item in new[] { "15 min", "1 hour", "5 hours", "Day", "Week", "Month", "3 months", "6 months", "Year", "Custom" })
         {
             int historyRanges = CountSegmented(form, item);
-            if (historyRanges < 2)
-                failures.Add($"Usage history range '{item}' should appear for network and disk ({state}), found {historyRanges}.");
+            if (historyRanges < 3)
+                failures.Add($"Usage history range '{item}' should appear for network, disk, and computer use ({state}), found {historyRanges}.");
         }
 
         if (FindLabel(form, "Start date") == null || FindLabel(form, "End date") == null)
             failures.Add($"Custom history should use Start date and End date labels ({state}).");
 
+        form.ShowSection("monitoring");
         if (FindSegmented(form, "Restart") == null || FindSegmented(form, "Startup") == null)
             failures.Add($"Total since control is missing ({state}).");
 
+        form.ShowSection("usage");
         int historyPlots = 0;
         foreach (Control control in Enumerate(form))
         {
@@ -571,8 +583,8 @@ internal static class SettingsSelfTest
                 historyPlots++;
         }
 
-        if (historyPlots < 2)
-            failures.Add($"Expected a network chart and a disk chart ({state}), found {historyPlots}.");
+        if (historyPlots < 3)
+            failures.Add($"Expected network, disk, and computer-use charts ({state}), found {historyPlots}.");
     }
 
     private static void ExpectWindow(List<string> failures, UsageRange range, DateTime at, int bucket, double minMinutes, double maxMinutes, string name)
@@ -731,7 +743,7 @@ internal static class SettingsSelfTest
 
         ScrollableControl? scroll = FindScrollHost(form);
         AntdUI.Switch? toggle = FindLabeledSwitch(form, "Hide when idle")
-            ?? FindLabeledSwitch(form, "Network history")
+            ?? FindLabeledSwitch(form, "Enabled")
             ?? FindFirstSwitch(form);
         if (scroll == null || toggle == null)
         {
@@ -797,16 +809,19 @@ internal static class SettingsSelfTest
                 failures.Add($"Changing a history filter scrolled the page ({state}): before={before}, after={afterRange}.");
         }
 
-        foreach (string historyLabel in new[] { "Network history", "Disk history" })
-        {
-            var historySwitch = FindLabeledSwitch(form, historyLabel);
-            if (historySwitch == null)
-            {
-                failures.Add($"Missing {historyLabel} switch ({state}).");
-                continue;
-            }
+        form.ShowSection("usage");
+        Application.DoEvents();
+        scroll.AutoScrollMinSize = new Size(0, Math.Max(scroll.AutoScrollMinSize.Height, scroll.ClientSize.Height + 1600));
+        Application.DoEvents();
+        SetScrollForTest(scroll, Math.Max(before, 200));
+        before = scroll.VerticalScroll.Value;
 
-            SetScrollForTest(scroll, Math.Max(before, 120));
+        var usageSwitches = FindLabeledSwitches(form, "Enabled");
+        if (usageSwitches.Count < 3)
+            failures.Add($"Usage page should have Enabled switches for network, disk, and computer use ({state}), found {usageSwitches.Count}.");
+        foreach (var historySwitch in usageSwitches.Take(3))
+        {
+            SetScrollForTest(scroll, Math.Max(before, 200));
             int historyBefore = scroll.VerticalScroll.Value;
             bool wasOn = historySwitch.Checked;
             historySwitch.Checked = !wasOn;
@@ -815,7 +830,22 @@ internal static class SettingsSelfTest
             historySwitch.Checked = wasOn;
             PumpScrollRestore();
             if (Math.Abs(historyAfter - historyBefore) > 40)
-                failures.Add($"Toggling {historyLabel} scrolled the page ({state}): before={historyBefore}, after={historyAfter}.");
+                failures.Add($"Toggling a usage Enabled switch scrolled the page ({state}): before={historyBefore}, after={historyAfter}.");
+        }
+
+        var customRange = FindSegmented(form, "Custom");
+        if (customRange != null)
+        {
+            SetScrollForTest(scroll, Math.Max(before, 200));
+            int customBefore = scroll.VerticalScroll.Value;
+            int prior = customRange.SelectIndex;
+            customRange.SelectIndex = 9;
+            PumpScrollRestore();
+            int afterCustom = scroll.VerticalScroll.Value;
+            customRange.SelectIndex = prior == 9 ? 3 : prior;
+            PumpScrollRestore();
+            if (Math.Abs(afterCustom - customBefore) > 40)
+                failures.Add($"Switching to Custom scrolled the page ({state}): before={customBefore}, after={afterCustom}.");
         }
     }
 
@@ -856,39 +886,62 @@ internal static class SettingsSelfTest
     }
 
     private static AntdUI.Switch? FindLabeledSwitch(Control root, string nearbyLabel)
+        => FindLabeledSwitches(root, nearbyLabel).FirstOrDefault();
+
+    private static List<AntdUI.Switch> FindLabeledSwitches(Control root, string nearbyLabel)
     {
-        var label = FindLabel(root, nearbyLabel);
-        if (label?.Parent == null)
-            return null;
-        foreach (Control child in label.Parent.Controls)
+        var found = new List<AntdUI.Switch>();
+        foreach (Control c in Enumerate(root))
         {
-            if (child is AntdUI.Switch toggle)
-                return toggle;
-        }
-
-        // Caption may sit on a header row; search the next sibling rows in the same card.
-        Control? card = label.Parent.Parent;
-        if (card == null)
-            return null;
-        bool seen = false;
-        foreach (Control row in card.Controls)
-        {
-            if (row == label.Parent)
+            if (c is not Label label || !string.Equals(label.Text, nearbyLabel, StringComparison.Ordinal) || label.Parent == null)
+                continue;
+            AntdUI.Switch? toggle = null;
+            foreach (Control child in label.Parent.Controls)
             {
-                seen = true;
+                if (child is AntdUI.Switch sw)
+                {
+                    toggle = sw;
+                    break;
+                }
+            }
+
+            if (toggle != null)
+            {
+                found.Add(toggle);
                 continue;
             }
 
-            if (!seen)
+            // Caption may sit on a header row; search the next sibling rows in the same card.
+            Control? card = label.Parent.Parent;
+            if (card == null)
                 continue;
-            foreach (Control child in row.Controls)
+            bool seen = false;
+            foreach (Control row in card.Controls)
             {
-                if (child is AntdUI.Switch toggle)
-                    return toggle;
+                if (row == label.Parent)
+                {
+                    seen = true;
+                    continue;
+                }
+
+                if (!seen)
+                    continue;
+                foreach (Control child in row.Controls)
+                {
+                    if (child is AntdUI.Switch sw)
+                    {
+                        found.Add(sw);
+                        toggle = sw;
+                        break;
+                    }
+                }
+
+                if (toggle != null)
+                    break;
             }
         }
 
-        return null;
+        return found;
     }
 
     private static AntdUI.Switch? FindFirstSwitch(Control root)

@@ -43,6 +43,7 @@ internal sealed class SettingsForm : AntdUI.Window
 
     private readonly StackPanel _generalPage;
     private readonly StackPanel _monitoringPage;
+    private readonly StackPanel _usagePage;
     private readonly StackPanel _appearancePage;
     private readonly StackPanel _aboutPage;
     private readonly Dictionary<MetricKind, ColorSwatch> _swatches = new();
@@ -54,21 +55,22 @@ internal sealed class SettingsForm : AntdUI.Window
     private AntdUI.Switch? _cpuHide, _memoryHide, _gpuHide, _vramHide, _netSendHide, _netRecvHide, _diskReadHide, _diskWriteHide, _npuHide, _npuMemoryHide;
     private AntdUI.Switch? _netSendTotal, _netRecvTotal, _diskReadTotal, _diskWriteTotal;
     private AntdUI.Segmented? _totalSinceSeg;
-    private AntdUI.Switch? _saveNetwork, _saveDisk;
-    private AntdUI.Segmented? _networkRange, _diskRange;
-    private AntdUI.DatePicker? _networkFrom, _networkTo, _diskFrom, _diskTo;
-    private Panel? _networkFilterRow, _diskFilterRow;
-    private Panel? _networkCustomRow, _diskCustomRow;
-    private Panel? _networkTotalRow, _diskTotalRow;
-    private Label? _networkTotal, _diskTotal;
-    private Panel? _networkHost, _diskHost;
-    private FormsPlot? _networkPlot, _diskPlot;
-    private Label? _networkEmpty, _diskEmpty;
-    private int _networkPlotAttempts, _diskPlotAttempts;
+    private AntdUI.Switch? _saveNetwork, _saveDisk, _saveComputerUse;
+    private AntdUI.Segmented? _networkRange, _diskRange, _computerUseRange;
+    private AntdUI.DatePicker? _networkFrom, _networkTo, _diskFrom, _diskTo, _computerUseFrom, _computerUseTo;
+    private Panel? _networkFilterRow, _diskFilterRow, _computerUseFilterRow;
+    private Panel? _networkCustomRow, _diskCustomRow, _computerUseCustomRow;
+    private Panel? _networkTotalRow, _diskTotalRow, _computerUseTotalRow;
+    private Label? _networkTotal, _diskTotal, _computerUseTotal;
+    private Panel? _networkHost, _diskHost, _computerUseHost;
+    private FormsPlot? _networkPlot, _diskPlot, _computerUsePlot;
+    private Label? _networkEmpty, _diskEmpty, _computerUseEmpty;
+    private int _networkPlotAttempts, _diskPlotAttempts, _computerUsePlotAttempts;
     private const int HistoryDayIndex = 3;
-    private const int HistoryCustomIndex = 7;
+    private const int HistoryCustomIndex = 9;
+    private const int HistoryFilterWidth = 980;
     private static readonly string[] HistoryRangeLabels =
-        ["15 min", "1 hour", "5 hours", "Day", "Week", "Month", "Year", "Custom"];
+        ["15 min", "1 hour", "5 hours", "Day", "Week", "Month", "3 months", "6 months", "Year", "Custom"];
     private readonly System.Windows.Forms.Timer _historyTimer = new() { Interval = 60_000 };
     private AntdUI.Switch? _showDetails;
     private AntdUI.Switch? _showLabelsCollapsed;
@@ -147,6 +149,7 @@ internal sealed class SettingsForm : AntdUI.Window
         };
         _nav.Items.Add(new AntdUI.MenuItem { Text = "General", ID = "general" });
         _nav.Items.Add(new AntdUI.MenuItem { Text = "Monitoring", ID = "monitoring" });
+        _nav.Items.Add(new AntdUI.MenuItem { Text = "Usage", ID = "usage" });
         _nav.Items.Add(new AntdUI.MenuItem { Text = "Appearance", ID = "appearance" });
         _nav.Items.Add(new AntdUI.MenuItem { Text = "About", ID = "about" });
         _nav.SelectChanged += (_, e) => ShowSection(e.Value?.ID ?? "general");
@@ -162,6 +165,7 @@ internal sealed class SettingsForm : AntdUI.Window
 
         _generalPage = BuildGeneral();
         _monitoringPage = BuildMonitoring();
+        _usagePage = BuildUsage();
         _appearancePage = BuildAppearance();
         _aboutPage = BuildAbout();
         foreach (var page in Pages())
@@ -279,7 +283,7 @@ internal sealed class SettingsForm : AntdUI.Window
         }
 
         LayoutActiveSection(preserveScroll: false);
-        if (id == "monitoring")
+        if (id == "usage")
         {
             RefreshHistoryChart();
             _historyTimer.Start();
@@ -333,6 +337,7 @@ internal sealed class SettingsForm : AntdUI.Window
     private StackPanel ActivePage() => _section switch
     {
         "monitoring" => _monitoringPage,
+        "usage" => _usagePage,
         "appearance" => _appearancePage,
         "about" => _aboutPage,
         _ => _generalPage
@@ -342,6 +347,7 @@ internal sealed class SettingsForm : AntdUI.Window
     {
         yield return _generalPage;
         yield return _monitoringPage;
+        yield return _usagePage;
         yield return _appearancePage;
         yield return _aboutPage;
     }
@@ -434,7 +440,16 @@ internal sealed class SettingsForm : AntdUI.Window
         if (_rateUnitSeg != null)
             _rateUnitSeg.SelectIndexChanged += (_, _) => SyncCeilingUnit();
         page.Add(ceilingCard);
-        page.Add(BuildHistoryCard());
+        return page;
+    }
+
+    private StackPanel BuildUsage()
+    {
+        var page = NewPage();
+        page.Add(PageTitle("Usage"));
+        page.Add(BuildNetworkUsageCard());
+        page.Add(BuildDiskUsageCard());
+        page.Add(BuildComputerUsageCard());
         return page;
     }
 
@@ -642,7 +657,8 @@ internal sealed class SettingsForm : AntdUI.Window
             _draft.TotalSince = _totalSinceSeg.SelectIndex == 1 ? TotalSince.Startup : TotalSince.Restart;
         if (_saveNetwork != null) _draft.SaveNetworkHistory = _saveNetwork.Checked;
         if (_saveDisk != null) _draft.SaveDiskHistory = _saveDisk.Checked;
-        _draft.SaveUsageHistory = _draft.SaveNetworkHistory || _draft.SaveDiskHistory;
+        if (_saveComputerUse != null) _draft.SaveComputerUseHistory = _saveComputerUse.Checked;
+        _draft.SaveUsageHistory = _draft.SaveNetworkHistory || _draft.SaveDiskHistory || _draft.SaveComputerUseHistory;
 
         SyncCeilingUnit();
         WriteCeilings(_ceilingUnit);
@@ -775,7 +791,13 @@ internal sealed class SettingsForm : AntdUI.Window
             Checked = isChecked
         };
         KeepScrollOnInteract(sw);
-        sw.CheckedChanged += (_, _) => _content.RestoreScrollSoon();
+        sw.CheckedChanged += (_, _) =>
+        {
+            // Capture before layout handlers run; a later visibility change may clamp to 0.
+            if (_content.VerticalScroll.Value > 0 || _content.HorizontalScroll.Value > 0)
+                _content.RememberScroll();
+            _content.RestoreScrollSoon();
+        };
         return sw;
     }
 
@@ -935,14 +957,13 @@ internal sealed class SettingsForm : AntdUI.Window
         return row;
     }
 
-    private StackPanel BuildHistoryCard()
+    private StackPanel BuildNetworkUsageCard()
     {
         var card = NewCard();
-        card.Add(Heading("Usage history"));
-        card.Add(Hint("Each switch records that pair and opens its chart with its own time filter. Turning it off stops new samples and collapses the chart. Saved samples stay.", 56));
-
-        card.Add(SwitchRow("Network history", _draft.SaveNetworkHistory, out _saveNetwork));
-        _networkFilterRow = SegmentRow(HistoryRangeLabels, HistoryDayIndex, out _networkRange, 760);
+        card.Add(Heading("Network usage"));
+        card.Add(Hint("Records upload and download. Turning it off stops new samples and collapses the chart. Saved samples stay.", 48));
+        card.Add(SwitchRow("Enabled", _draft.SaveNetworkHistory, out _saveNetwork));
+        _networkFilterRow = SegmentRow(HistoryRangeLabels, HistoryDayIndex, out _networkRange, HistoryFilterWidth);
         _networkFilterRow.Visible = _draft.SaveNetworkHistory;
         card.Add(_networkFilterRow);
         _networkCustomRow = BuildHistoryCustomRow(out _networkFrom, out _networkTo, RefreshNetworkHistory);
@@ -955,9 +976,16 @@ internal sealed class SettingsForm : AntdUI.Window
         EnsureHistoryPlot(_networkHost, ref _networkPlot, ref _networkPlotAttempts);
         card.Add(_networkHost);
         BindHistorySection(_saveNetwork, _networkFilterRow, _networkCustomRow, _networkTotalRow, _networkHost, _networkRange, RefreshNetworkHistory);
+        return card;
+    }
 
-        card.Add(SwitchRow("Disk history", _draft.SaveDiskHistory, out _saveDisk));
-        _diskFilterRow = SegmentRow(HistoryRangeLabels, HistoryDayIndex, out _diskRange, 760);
+    private StackPanel BuildDiskUsageCard()
+    {
+        var card = NewCard();
+        card.Add(Heading("Disk usage"));
+        card.Add(Hint("Records disk read and write. Turning it off stops new samples and collapses the chart. Saved samples stay.", 48));
+        card.Add(SwitchRow("Enabled", _draft.SaveDiskHistory, out _saveDisk));
+        _diskFilterRow = SegmentRow(HistoryRangeLabels, HistoryDayIndex, out _diskRange, HistoryFilterWidth);
         _diskFilterRow.Visible = _draft.SaveDiskHistory;
         card.Add(_diskFilterRow);
         _diskCustomRow = BuildHistoryCustomRow(out _diskFrom, out _diskTo, RefreshDiskHistory);
@@ -970,7 +998,28 @@ internal sealed class SettingsForm : AntdUI.Window
         EnsureHistoryPlot(_diskHost, ref _diskPlot, ref _diskPlotAttempts);
         card.Add(_diskHost);
         BindHistorySection(_saveDisk, _diskFilterRow, _diskCustomRow, _diskTotalRow, _diskHost, _diskRange, RefreshDiskHistory);
+        return card;
+    }
 
+    private StackPanel BuildComputerUsageCard()
+    {
+        var card = NewCard();
+        card.Add(Heading("Computer usage"));
+        card.Add(Hint("Counts awake time while this app is running. Sleep and hibernate pause counting. Turning it off stops new samples and collapses the chart. Saved samples stay.", 56));
+        card.Add(SwitchRow("Enabled", _draft.SaveComputerUseHistory, out _saveComputerUse));
+        _computerUseFilterRow = SegmentRow(HistoryRangeLabels, HistoryDayIndex, out _computerUseRange, HistoryFilterWidth);
+        _computerUseFilterRow.Visible = _draft.SaveComputerUseHistory;
+        card.Add(_computerUseFilterRow);
+        _computerUseCustomRow = BuildHistoryCustomRow(out _computerUseFrom, out _computerUseTo, RefreshComputerUseHistory);
+        card.Add(_computerUseCustomRow);
+        _computerUseTotalRow = BuildHistoryTotalRow(out _computerUseTotal);
+        _computerUseTotalRow.Visible = _draft.SaveComputerUseHistory;
+        card.Add(_computerUseTotalRow);
+        _computerUseHost = CreateHistoryHost(out _computerUseEmpty);
+        _computerUseHost.Visible = _draft.SaveComputerUseHistory;
+        EnsureHistoryPlot(_computerUseHost, ref _computerUsePlot, ref _computerUsePlotAttempts);
+        card.Add(_computerUseHost);
+        BindHistorySection(_saveComputerUse, _computerUseFilterRow, _computerUseCustomRow, _computerUseTotalRow, _computerUseHost, _computerUseRange, RefreshComputerUseHistory);
         return card;
     }
 
@@ -987,25 +1036,24 @@ internal sealed class SettingsForm : AntdUI.Window
         {
             range.SelectIndexChanged += (_, _) =>
             {
-                bool custom = range.SelectIndex == HistoryCustomIndex;
-                bool showCustom = custom && (toggle?.Checked ?? false);
-                if (customRow.Visible != showCustom)
+                _content.BeginScrollPreserve(remember: true);
+                try
                 {
-                    _content.BeginScrollPreserve(remember: true);
-                    try
+                    bool custom = range.SelectIndex == HistoryCustomIndex;
+                    bool showCustom = custom && (toggle?.Checked ?? false);
+                    if (customRow.Visible != showCustom)
                     {
                         customRow.Visible = showCustom;
                         if (_chromeReady)
                             LayoutActiveSection(preserveScroll: true, refreshRememberedScroll: false);
                     }
-                    finally
-                    {
-                        _content.EndScrollPreserve();
-                    }
-                }
 
-                refresh();
-                _content.RestoreScrollSoon();
+                    refresh();
+                }
+                finally
+                {
+                    _content.EndScrollPreserve(holdMs: 800);
+                }
             };
         }
 
@@ -1013,29 +1061,27 @@ internal sealed class SettingsForm : AntdUI.Window
             return;
         toggle.CheckedChanged += (_, _) =>
         {
-            bool on = toggle.Checked;
-            bool custom = (range?.SelectIndex ?? HistoryDayIndex) == HistoryCustomIndex;
-            bool changed = filterRow.Visible != on
-                || host.Visible != on
-                || totalRow.Visible != on
-                || customRow.Visible != (on && custom);
             _content.BeginScrollPreserve(remember: true);
             try
             {
+                bool on = toggle.Checked;
+                bool custom = (range?.SelectIndex ?? HistoryDayIndex) == HistoryCustomIndex;
+                bool changed = filterRow.Visible != on
+                    || host.Visible != on
+                    || totalRow.Visible != on
+                    || customRow.Visible != (on && custom);
                 filterRow.Visible = on;
                 host.Visible = on;
                 totalRow.Visible = on;
                 customRow.Visible = on && custom;
                 if (changed && _chromeReady)
                     LayoutActiveSection(preserveScroll: true, refreshRememberedScroll: false);
+                refresh();
             }
             finally
             {
-                _content.EndScrollPreserve();
+                _content.EndScrollPreserve(holdMs: 800);
             }
-
-            refresh();
-            _content.RestoreScrollSoon();
         };
     }
 
@@ -1172,8 +1218,10 @@ internal sealed class SettingsForm : AntdUI.Window
         3 => UsageRange.Day,
         4 => UsageRange.Week,
         5 => UsageRange.Month,
-        6 => UsageRange.Year,
-        7 => UsageRange.Custom,
+        6 => UsageRange.Months3,
+        7 => UsageRange.Months6,
+        8 => UsageRange.Year,
+        9 => UsageRange.Custom,
         _ => UsageRange.Day
     };
 
@@ -1181,6 +1229,7 @@ internal sealed class SettingsForm : AntdUI.Window
     {
         RefreshNetworkHistory();
         RefreshDiskHistory();
+        RefreshComputerUseHistory();
     }
 
     private void RefreshNetworkHistory() => RefreshHistorySection(
@@ -1206,6 +1255,32 @@ internal sealed class SettingsForm : AntdUI.Window
         _diskEmpty,
         _diskTotal,
         network: false);
+
+    private void RefreshComputerUseHistory()
+    {
+        if (_computerUseHost == null || !(_saveComputerUse?.Checked ?? false))
+        {
+            if (_computerUseTotal != null)
+                _computerUseTotal.Text = "";
+            return;
+        }
+
+        EnsureHistoryPlot(_computerUseHost, ref _computerUsePlot, ref _computerUsePlotAttempts);
+        try
+        {
+            var usageRange = RangeFromIndex(_computerUseRange?.SelectIndex ?? HistoryDayIndex);
+            var window = UsageHistoryStore.Resolve(usageRange, DateTime.Now, _computerUseFrom?.Value, _computerUseTo?.Value);
+            bool any = UsageHistoryStore.HasAnyUptime(UsageHistoryStore.DefaultPath);
+            UptimeBucket[]? buckets = any ? UsageHistoryStore.ReadUptime(UsageHistoryStore.DefaultPath, window) : null;
+            PaintUptimeHistory(_computerUseHost, _computerUsePlot, _computerUseEmpty, _computerUseTotal, buckets, any, window.BucketSeconds);
+        }
+        catch
+        {
+            if (_computerUseTotal != null)
+                _computerUseTotal.Text = "";
+            ShowHistoryEmpty(_computerUseEmpty, _computerUsePlot, "No history yet.");
+        }
+    }
 
     private void RefreshHistorySection(
         AntdUI.Switch? toggle,
@@ -1366,8 +1441,128 @@ internal sealed class SettingsForm : AntdUI.Window
         tip.OffsetX = 12;
         tip.OffsetY = 12;
         tip.IsVisible = false;
-        plot.Tag = new HistoryHoverState(hoverPoints, tip, highlight, hoverStep);
+        plot.Tag = new HistoryHoverState(hoverPoints, tip, highlight, hoverStep, duration: false);
         plot.Refresh();
+    }
+
+    private static void PaintUptimeHistory(
+        Panel? host,
+        FormsPlot? plot,
+        Label? empty,
+        Label? total,
+        UptimeBucket[]? buckets,
+        bool any,
+        int bucketSeconds)
+    {
+        if (host == null || !host.Visible)
+            return;
+        if (!any || plot == null || buckets == null)
+        {
+            if (total != null)
+                total.Text = "";
+            if (plot != null)
+            {
+                plot.Tag = null;
+                plot.Visible = false;
+            }
+
+            ShowHistoryEmpty(empty, plot, plot == null && any ? "History chart is unavailable." : "No history yet.");
+            return;
+        }
+
+        empty?.Hide();
+        plot.Visible = true;
+        var chart = plot.Plot;
+        chart.Clear();
+
+        const string seriesName = "Awake";
+        const string seriesHex = "#69F0AE";
+        double totalSeconds = 0;
+        HistoryHoverPoint[] hoverPoints = [];
+        double hoverStep = Math.Max(bucketSeconds, 60) / 86_400.0;
+        if (buckets.Length > 0)
+        {
+            double[] xs = new double[buckets.Length];
+            double[] ys = new double[buckets.Length];
+            for (int i = 0; i < buckets.Length; i++)
+            {
+                xs[i] = buckets[i].LocalStart.ToOADate();
+                ys[i] = buckets[i].AwakeSeconds;
+                totalSeconds += ys[i];
+            }
+
+            double step = xs.Length > 1
+                ? Math.Abs(xs[1] - xs[0])
+                : Math.Max(bucketSeconds, 60) / 86_400.0;
+            bool coarse = bucketSeconds >= 600 && bucketSeconds < 86_400;
+            double barSize = coarse ? step * 0.55 : Math.Max(step * 0.62, step * 0.28);
+            AddHistoryBars(chart, xs, ys, seriesName, seriesHex, 0, barSize);
+
+            hoverPoints = new HistoryHoverPoint[buckets.Length];
+            for (int i = 0; i < buckets.Length; i++)
+            {
+                hoverPoints[i] = new HistoryHoverPoint(
+                    xs[i],
+                    ys[i],
+                    0,
+                    buckets[i].LocalStart,
+                    seriesName,
+                    "");
+            }
+
+            hoverStep = step;
+        }
+
+        if (total != null)
+            total.Text = "Total: " + FormatDuration(totalSeconds);
+
+        chart.Axes.DateTimeTicksBottom();
+        ConfigureHistoryBottomTicks(chart, bucketSeconds);
+
+        chart.Axes.Left.TickGenerator = new ScottPlot.TickGenerators.NumericAutomatic
+        {
+            LabelFormatter = FormatDuration
+        };
+        StyleHistoryPlot(chart);
+        chart.ShowLegend(ScottPlot.Alignment.UpperRight);
+
+        var highlight = chart.Add.HorizontalSpan(0, 0);
+        highlight.FillColor = ScottPlot.Color.FromHex("#FFFFFF").WithAlpha(28);
+        highlight.LineColor = ScottPlot.Color.FromHex("#F2F2F5").WithAlpha(90);
+        highlight.LineWidth = 1;
+        highlight.EnableAutoscale = false;
+        highlight.IsVisible = false;
+
+        var tip = chart.Add.Annotation("");
+        tip.LabelFontColor = ScottPlot.Color.FromHex("#F2F2F5");
+        tip.LabelBackgroundColor = ScottPlot.Color.FromHex("#1E1E22");
+        tip.LabelBorderColor = ScottPlot.Color.FromHex("#5A5A62");
+        tip.LabelBorderWidth = 1;
+        tip.LabelShadowColor = ScottPlot.Colors.Transparent;
+        tip.LabelFontSize = 16;
+        tip.OffsetX = 12;
+        tip.OffsetY = 12;
+        tip.IsVisible = false;
+        plot.Tag = new HistoryHoverState(hoverPoints, tip, highlight, hoverStep, duration: true);
+        plot.Refresh();
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        long total = (long)Math.Round(Math.Max(0, seconds));
+        if (total < 60)
+            return total + "s";
+        long minutes = total / 60;
+        long remSeconds = total % 60;
+        if (minutes < 60)
+            return remSeconds > 0 ? minutes + "m " + remSeconds + "s" : minutes + "m";
+        long hours = minutes / 60;
+        long remMinutes = minutes % 60;
+        if (hours < 48)
+            return remMinutes > 0 ? hours + "h " + remMinutes + "m" : hours + "h";
+        long days = hours / 24;
+        long remHours = hours % 24;
+        return remHours > 0 ? days + "d " + remHours + "h" : days + "d";
     }
 
     private static void ConfigureHistoryBottomTicks(ScottPlot.Plot chart, int bucketSeconds)
@@ -1479,9 +1674,11 @@ internal sealed class SettingsForm : AntdUI.Window
         string when = point.At.ToString(
             point.At.TimeOfDay == TimeSpan.Zero ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm",
             CultureInfo.InvariantCulture);
-        string text = when
-            + "\n" + point.FirstName + ": " + GroupLayout.FormatVolume(point.First)
-            + "\n" + point.SecondName + ": " + GroupLayout.FormatVolume(point.Second);
+        string text = hover.Duration
+            ? when + "\n" + point.FirstName + ": " + FormatDuration(point.First)
+            : when
+                + "\n" + point.FirstName + ": " + GroupLayout.FormatVolume(point.First)
+                + "\n" + point.SecondName + ": " + GroupLayout.FormatVolume(point.Second);
         if (hover.Visible && hover.Index == best && hover.Annotation.Text == text)
             return;
 
@@ -1508,12 +1705,14 @@ internal sealed class SettingsForm : AntdUI.Window
         HistoryHoverPoint[] points,
         ScottPlot.Plottables.Annotation annotation,
         ScottPlot.Plottables.HorizontalSpan highlight,
-        double step)
+        double step,
+        bool duration)
     {
         public HistoryHoverPoint[] Points { get; } = points;
         public ScottPlot.Plottables.Annotation Annotation { get; } = annotation;
         public ScottPlot.Plottables.HorizontalSpan Highlight { get; } = highlight;
         public double Step { get; } = Math.Max(step, 1.0 / 86_400.0);
+        public bool Duration { get; } = duration;
         public bool Visible;
         public int Index = -1;
     }
@@ -1701,7 +1900,7 @@ internal sealed class SettingsForm : AntdUI.Window
         var row = new Panel { Height = 52, BackColor = BgCard, Margin = Padding.Empty };
         segmented = new AntdUI.Segmented
         {
-            Size = new Size(Math.Clamp(maxWidth, 200, 900), 36),
+            Size = new Size(Math.Clamp(maxWidth, 200, 1100), 36),
             Full = true
         };
         foreach (string item in items)
@@ -1710,7 +1909,12 @@ internal sealed class SettingsForm : AntdUI.Window
         var seg = segmented;
         int cap = maxWidth;
         KeepScrollOnInteract(seg);
-        seg.SelectIndexChanged += (_, _) => _content.RestoreScrollSoon();
+        seg.SelectIndexChanged += (_, _) =>
+        {
+            if (_content.VerticalScroll.Value > 0 || _content.HorizontalScroll.Value > 0)
+                _content.RememberScroll();
+            _content.RestoreScrollSoon();
+        };
         row.Controls.Add(seg);
         row.Resize += (_, _) =>
         {
@@ -2053,22 +2257,22 @@ internal sealed class SettingsForm : AntdUI.Window
         {
             if (remember)
             {
-                // If layout already snapped to 0, keep the last user offset instead of saving 0.
-                if (VerticalScroll.Value > 0 || HorizontalScroll.Value > 0 || (_savedX == 0 && _savedY == 0))
+                // Trust a live non-zero offset. If layout already clamped to 0, keep the last user offset.
+                if (VerticalScroll.Value > 0 || HorizontalScroll.Value > 0)
                     RememberScroll();
             }
 
             _suppressRemember++;
         }
 
-        public void EndScrollPreserve()
+        public void EndScrollPreserve(int holdMs = 450)
         {
             if (_suppressRemember > 0)
                 _suppressRemember--;
-            RestoreScrollSoon();
+            RestoreScrollSoon(holdMs);
         }
 
-        public void RestoreScrollSoon()
+        public void RestoreScrollSoon(int holdMs = 450)
         {
             int x = _savedX;
             int y = _savedY;
@@ -2084,8 +2288,9 @@ internal sealed class SettingsForm : AntdUI.Window
             });
 
             // Chart host show/hide and ScottPlot refresh can keep shifting scroll for a few frames.
+            int hold = Math.Clamp(holdMs, 50, 2000);
             var timer = new System.Windows.Forms.Timer { Interval = 16 };
-            long until = Environment.TickCount64 + 450;
+            long until = Environment.TickCount64 + hold;
             timer.Tick += (_, _) =>
             {
                 if (generation != _restoreGeneration || IsDisposed || Environment.TickCount64 >= until)
@@ -2107,19 +2312,8 @@ internal sealed class SettingsForm : AntdUI.Window
             _restoring = true;
             try
             {
-                if (HorizontalScroll.Maximum > 0)
-                {
-                    int maxX = Math.Max(HorizontalScroll.Minimum, HorizontalScroll.Maximum);
-                    HorizontalScroll.Value = Math.Clamp(x, HorizontalScroll.Minimum, maxX);
-                }
-
-                if (VerticalScroll.Maximum > 0)
-                {
-                    int maxY = Math.Max(VerticalScroll.Minimum, VerticalScroll.Maximum);
-                    VerticalScroll.Value = Math.Clamp(y, VerticalScroll.Minimum, maxY);
-                }
-
-                AutoScrollPosition = new Point(HorizontalScroll.Value, VerticalScroll.Value);
+                // AutoScrollPosition setter wants positive offsets; getter returns negatives.
+                AutoScrollPosition = new Point(Math.Max(0, x), Math.Max(0, y));
             }
             finally
             {

@@ -55,8 +55,9 @@ internal sealed class MetricsHub : IDisposable
         _timer = new System.Threading.Timer(_ => Collect(), null, Timeout.Infinite, _intervalMs);
     }
 
-    /// <summary>Records upload and download while the network history block is on.</summary>
-    public void SetHistoryRecording(bool network, bool disk) => _history?.SetRecording(network, disk);
+    /// <summary>Records network, disk, and computer-use history while each block is on.</summary>
+    public void SetHistoryRecording(bool network, bool disk, bool computerUse) =>
+        _history?.SetRecording(network, disk, computerUse);
 
     public int IntervalMs
     {

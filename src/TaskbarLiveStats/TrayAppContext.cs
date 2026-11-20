@@ -41,7 +41,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _window.ApplySettings(_settings, forceLayout: true);
 
         _metrics = new MetricsHub(_settings.UpdateIntervalMs);
-        _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory);
+        _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory, _settings.SaveComputerUseHistory);
         _watcher = new TaskbarWatcher(200);
 
         _startupItem = new ToolStripMenuItem("Start with Windows")
@@ -248,7 +248,7 @@ internal sealed class TrayAppContext : ApplicationContext
             _startupItem.Checked = _settings.StartWithWindows;
 
         _metrics.IntervalMs = _settings.UpdateIntervalMs;
-        _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory);
+        _metrics.SetHistoryRecording(_settings.SaveNetworkHistory, _settings.SaveDiskHistory, _settings.SaveComputerUseHistory);
         _hotkey.Apply(_settings);
 
         _window.ApplySettings(_settings, forceLayout: true);

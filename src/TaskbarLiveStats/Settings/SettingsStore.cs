@@ -98,7 +98,7 @@ internal sealed class SettingsStore
         settings.UsageColors.Normalize();
         settings.RateCeilings ??= new RateCeilings();
         settings.RateCeilings.Normalize();
-        settings.SaveUsageHistory = settings.SaveNetworkHistory || settings.SaveDiskHistory;
+        settings.SaveUsageHistory = settings.SaveNetworkHistory || settings.SaveDiskHistory || settings.SaveComputerUseHistory;
         string json = JsonSerializer.Serialize(settings, JsonOptions);
         string? dir = System.IO.Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))

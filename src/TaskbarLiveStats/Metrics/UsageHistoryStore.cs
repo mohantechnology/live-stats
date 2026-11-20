@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Win32;
 
 namespace TaskbarLiveStats.Metrics;
 
@@ -10,6 +11,8 @@ internal enum UsageRange
     Day,
     Week,
     Month,
+    Months3,
+    Months6,
     Year,
     Custom
 }
@@ -18,25 +21,34 @@ internal readonly record struct UsageWindow(DateTime LocalStart, DateTime LocalE
 
 internal readonly record struct UsageBucket(DateTime LocalStart, ulong NetSend, ulong NetRecv, ulong DiskRead, ulong DiskWrite);
 
+internal readonly record struct UptimeBucket(DateTime LocalStart, int AwakeSeconds);
+
 /// <summary>
-/// Per-minute disk and network byte totals in %AppData%\TaskbarLiveStats\usage.db.
+/// Per-minute disk/network bytes and awake-time seconds in %AppData%\TaskbarLiveStats\usage.db.
 /// Minutes the app did not record are absent and chart as zero.
 /// </summary>
 internal sealed class UsageHistoryStore : IDisposable
 {
     public const int RetentionDays = 400;
     private const long FlushIntervalMs = 15_000;
+    private const int MaxSecondsPerMinute = 60;
 
     private readonly string _path;
     private readonly SqliteConnection _connection;
     private readonly object _gate = new();
+    private readonly System.Threading.Timer _uptimeTimer;
     private bool _recordNetwork = true;
     private bool _recordDisk = true;
+    private bool _recordComputerUse = true;
+    private bool _suspended;
     private long _openMinute = -1;
     private ulong _pendingSend;
     private ulong _pendingRecv;
     private ulong _pendingRead;
     private ulong _pendingWrite;
+    private long _uptimeOpenMinute = -1;
+    private int _pendingAwakeSeconds;
+    private long _accrueBaselineTick = -1;
     private long _lastFlushTick = Environment.TickCount64;
     private bool _disposed;
 
@@ -67,11 +79,39 @@ internal sealed class UsageHistoryStore : IDisposable
                 disk_write INTEGER NOT NULL
             );
             """);
+        Execute("""
+            CREATE TABLE IF NOT EXISTS uptime_minute (
+                minute_utc INTEGER PRIMARY KEY,
+                awake_seconds INTEGER NOT NULL
+            );
+            """);
         long cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (long)RetentionDays * 24 * 60 * 60;
-        using var prune = _connection.CreateCommand();
-        prune.CommandText = "DELETE FROM usage_minute WHERE minute_utc < $cutoff";
-        prune.Parameters.AddWithValue("$cutoff", cutoff);
-        prune.ExecuteNonQuery();
+        using (var prune = _connection.CreateCommand())
+        {
+            prune.CommandText = "DELETE FROM usage_minute WHERE minute_utc < $cutoff";
+            prune.Parameters.AddWithValue("$cutoff", cutoff);
+            prune.ExecuteNonQuery();
+        }
+
+        using (var pruneUptime = _connection.CreateCommand())
+        {
+            pruneUptime.CommandText = "DELETE FROM uptime_minute WHERE minute_utc < $cutoff";
+            pruneUptime.Parameters.AddWithValue("$cutoff", cutoff);
+            pruneUptime.ExecuteNonQuery();
+        }
+
+        _uptimeTimer = new System.Threading.Timer(_ => AccrueUptime(), null, FlushIntervalMs, FlushIntervalMs);
+        try
+        {
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        }
+        catch
+        {
+            // Accrual still runs from the timer while the process is awake.
+        }
+
+        lock (_gate)
+            _accrueBaselineTick = Environment.TickCount64;
     }
 
     public static string DefaultPath => Path.Combine(
@@ -89,15 +129,33 @@ internal sealed class UsageHistoryStore : IDisposable
         get { lock (_gate) return _recordDisk; }
     }
 
-    public void SetRecording(bool network, bool disk)
+    public bool RecordComputerUse
+    {
+        get { lock (_gate) return _recordComputerUse; }
+    }
+
+    public void SetRecording(bool network, bool disk, bool computerUse)
     {
         lock (_gate)
         {
-            bool turningOff = (_recordNetwork && !network) || (_recordDisk && !disk);
-            if (turningOff)
+            bool turningOffBytes = (_recordNetwork && !network) || (_recordDisk && !disk);
+            bool turningOffUptime = _recordComputerUse && !computerUse;
+            bool turningOnUptime = !_recordComputerUse && computerUse;
+            if (turningOffBytes || turningOffUptime)
                 FlushLocked();
             _recordNetwork = network;
             _recordDisk = disk;
+            _recordComputerUse = computerUse;
+            if (turningOffUptime)
+            {
+                _accrueBaselineTick = -1;
+                _uptimeOpenMinute = -1;
+                _pendingAwakeSeconds = 0;
+            }
+            else if (turningOnUptime && !_suspended)
+            {
+                _accrueBaselineTick = Environment.TickCount64;
+            }
         }
     }
 
@@ -124,7 +182,7 @@ internal sealed class UsageHistoryStore : IDisposable
 
                 // Flush the previous minute before the new deltas land on it.
                 if (_openMinute >= 0 && minute != _openMinute)
-                    FlushLocked();
+                    FlushBytesLocked();
                 if (netSend == 0 && netRecv == 0 && diskRead == 0 && diskWrite == 0)
                     return;
                 _openMinute = minute;
@@ -160,11 +218,30 @@ internal sealed class UsageHistoryStore : IDisposable
 
     public void Dispose()
     {
+        try
+        {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        }
+        catch
+        {
+            // Ignore unsubscribe failures during teardown.
+        }
+
+        _uptimeTimer.Dispose();
         lock (_gate)
         {
             if (_disposed)
                 return;
-            try { FlushLocked(); } catch { /* shutting down */ }
+            try
+            {
+                AccruePendingFromBaselineLocked();
+                FlushLocked();
+            }
+            catch
+            {
+                // shutting down
+            }
+
             _disposed = true;
             _connection.Dispose();
         }
@@ -179,6 +256,23 @@ internal sealed class UsageHistoryStore : IDisposable
             using var connection = OpenRead(path);
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT 1 FROM usage_minute LIMIT 1";
+            return command.ExecuteScalar() != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool HasAnyUptime(string path)
+    {
+        if (!File.Exists(path))
+            return false;
+        try
+        {
+            using var connection = OpenRead(path);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1 FROM uptime_minute LIMIT 1";
             return command.ExecuteScalar() != null;
         }
         catch
@@ -213,6 +307,14 @@ internal sealed class UsageHistoryStore : IDisposable
                 break;
             case UsageRange.Month:
                 start = now.Date.AddDays(-30);
+                bucket = 86_400;
+                break;
+            case UsageRange.Months3:
+                start = now.Date.AddDays(-90);
+                bucket = 86_400;
+                break;
+            case UsageRange.Months6:
+                start = now.Date.AddDays(-180);
                 bucket = 86_400;
                 break;
             case UsageRange.Year:
@@ -308,15 +410,154 @@ internal sealed class UsageHistoryStore : IDisposable
         }
     }
 
+    public static UptimeBucket[] ReadUptime(string path, UsageWindow window)
+    {
+        if (!File.Exists(path) || window.BucketSeconds <= 0 || window.LocalEnd <= window.LocalStart)
+            return [];
+
+        try
+        {
+            int offset = (int)TimeZoneInfo.Local.GetUtcOffset(window.LocalStart).TotalSeconds;
+            long startUnix = ToUnix(window.LocalStart);
+            long endUnix = ToUnix(window.LocalEnd);
+            var totals = new Dictionary<long, int>();
+            using (var connection = OpenRead(path))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT ((minute_utc + $off) / $bucket) * $bucket - $off AS bucket_utc,
+                           SUM(awake_seconds)
+                    FROM uptime_minute
+                    WHERE minute_utc >= $start AND minute_utc < $end
+                    GROUP BY bucket_utc
+                    ORDER BY bucket_utc
+                    """;
+                command.Parameters.AddWithValue("$off", offset);
+                command.Parameters.AddWithValue("$bucket", window.BucketSeconds);
+                command.Parameters.AddWithValue("$start", startUnix);
+                command.Parameters.AddWithValue("$end", endUnix);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    long bucketUtc = reader.GetInt64(0);
+                    int seconds = reader.IsDBNull(1) ? 0 : (int)Math.Clamp(reader.GetInt64(1), 0, int.MaxValue);
+                    totals[bucketUtc] = seconds;
+                }
+            }
+
+            var filled = new List<UptimeBucket>();
+            DateTime cursor = AlignDown(window.LocalStart, window.BucketSeconds);
+            while (cursor < window.LocalEnd)
+            {
+                long key = ToUnix(cursor);
+                filled.Add(new UptimeBucket(cursor, totals.TryGetValue(key, out int seconds) ? seconds : 0));
+                cursor = cursor.AddSeconds(window.BucketSeconds);
+            }
+
+            return filled.ToArray();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private void AccrueUptime()
+    {
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed || !_recordComputerUse || _suspended)
+                    return;
+                long nowTick = Environment.TickCount64;
+                if (_accrueBaselineTick < 0)
+                {
+                    _accrueBaselineTick = nowTick;
+                    return;
+                }
+
+                long elapsedMs = nowTick - _accrueBaselineTick;
+                if (elapsedMs < 1000)
+                    return;
+                int seconds = (int)Math.Min(elapsedMs / 1000, MaxSecondsPerMinute * 2);
+                _accrueBaselineTick = nowTick - (elapsedMs % 1000);
+                AddUptimeSecondsLocked(DateTime.UtcNow, seconds);
+                if (Environment.TickCount64 - _lastFlushTick >= FlushIntervalMs)
+                    FlushLocked();
+            }
+        }
+        catch
+        {
+            // Keep accruing on the next tick.
+        }
+    }
+
+    private void AddUptimeSecondsLocked(DateTime utc, int seconds)
+    {
+        if (seconds <= 0)
+            return;
+        long minute = new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeSeconds() / 60 * 60;
+        if (_uptimeOpenMinute >= 0 && minute != _uptimeOpenMinute)
+            FlushUptimeLocked();
+        _uptimeOpenMinute = minute;
+        _pendingAwakeSeconds = Math.Min(MaxSecondsPerMinute, _pendingAwakeSeconds + seconds);
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed)
+                    return;
+                if (e.Mode == PowerModes.Suspend)
+                {
+                    AccruePendingFromBaselineLocked();
+                    FlushLocked();
+                    _suspended = true;
+                    _accrueBaselineTick = -1;
+                }
+                else if (e.Mode == PowerModes.Resume)
+                {
+                    _suspended = false;
+                    if (_recordComputerUse)
+                        _accrueBaselineTick = Environment.TickCount64;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore power-event failures; the next timer tick recovers.
+        }
+    }
+
+    private void AccruePendingFromBaselineLocked()
+    {
+        if (!_recordComputerUse || _suspended || _accrueBaselineTick < 0)
+            return;
+        long elapsedMs = Environment.TickCount64 - _accrueBaselineTick;
+        if (elapsedMs < 1000)
+            return;
+        int seconds = (int)Math.Min(elapsedMs / 1000, MaxSecondsPerMinute * 2);
+        _accrueBaselineTick = -1;
+        AddUptimeSecondsLocked(DateTime.UtcNow, seconds);
+    }
+
     private void FlushLocked()
+    {
+        FlushBytesLocked();
+        FlushUptimeLocked();
+        _lastFlushTick = Environment.TickCount64;
+    }
+
+    private void FlushBytesLocked()
     {
         if (_openMinute < 0)
             return;
         if (_pendingSend == 0 && _pendingRecv == 0 && _pendingRead == 0 && _pendingWrite == 0)
-        {
-            _lastFlushTick = Environment.TickCount64;
             return;
-        }
 
         using var command = _connection.CreateCommand();
         command.CommandText = """
@@ -335,7 +576,24 @@ internal sealed class UsageHistoryStore : IDisposable
         command.Parameters.AddWithValue("$write", Clamp(_pendingWrite));
         command.ExecuteNonQuery();
         _pendingSend = _pendingRecv = _pendingRead = _pendingWrite = 0;
-        _lastFlushTick = Environment.TickCount64;
+    }
+
+    private void FlushUptimeLocked()
+    {
+        if (_uptimeOpenMinute < 0 || _pendingAwakeSeconds <= 0)
+            return;
+
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO uptime_minute (minute_utc, awake_seconds)
+            VALUES ($minute, $seconds)
+            ON CONFLICT(minute_utc) DO UPDATE SET
+                awake_seconds = MIN(60, awake_seconds + excluded.awake_seconds)
+            """;
+        command.Parameters.AddWithValue("$minute", _uptimeOpenMinute);
+        command.Parameters.AddWithValue("$seconds", Math.Clamp(_pendingAwakeSeconds, 0, MaxSecondsPerMinute));
+        command.ExecuteNonQuery();
+        _pendingAwakeSeconds = 0;
     }
 
     private void Execute(string sql)

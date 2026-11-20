@@ -419,6 +419,9 @@ internal sealed class AppSettings
     /// <summary>Record and chart disk read and disk write. Default on.</summary>
     public bool SaveDiskHistory { get; set; } = true;
 
+    /// <summary>Record and chart PC awake time. Default on.</summary>
+    public bool SaveComputerUseHistory { get; set; } = true;
+
     public bool HotkeyEnabled { get; set; } = true;
     /// <summary>Win32 MOD_* flags. Default Win+Ctrl.</summary>
     public int HotkeyModifiers { get; set; } = HotkeyDefaults.Modifiers;
@@ -476,9 +479,10 @@ internal sealed class AppSettings
         HideWhenIdle = (HideWhenIdle ?? new IdleHideToggles()).Clone(),
         TotalUsage = (TotalUsage ?? new TotalUsageToggles()).Clone(),
         TotalSince = TotalSince,
-        SaveUsageHistory = SaveNetworkHistory || SaveDiskHistory,
+        SaveUsageHistory = SaveNetworkHistory || SaveDiskHistory || SaveComputerUseHistory,
         SaveNetworkHistory = SaveNetworkHistory,
         SaveDiskHistory = SaveDiskHistory,
+        SaveComputerUseHistory = SaveComputerUseHistory,
         HotkeyEnabled = HotkeyEnabled,
         HotkeyModifiers = HotkeyModifiers,
         HotkeyVirtualKey = HotkeyVirtualKey,
