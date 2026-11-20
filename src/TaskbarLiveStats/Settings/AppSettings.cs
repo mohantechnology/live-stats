@@ -354,6 +354,13 @@ internal sealed class RateCeilings
 internal sealed class AppSettings
 {
     public bool StartWithWindows { get; set; } = true;
+
+    /// <summary>
+    /// When true and the app was launched by Windows autostart, keep the live stats bar hidden.
+    /// Manual launches are unaffected. Default off.
+    /// </summary>
+    public bool HideOnAutostart { get; set; }
+
     public MetricToggles Metrics { get; set; } = new();
     public OverlayOrientation Orientation { get; set; } = OverlayOrientation.Horizontal;
     public PlacementMode PlacementMode { get; set; } = PlacementMode.Taskbar;
@@ -459,6 +466,7 @@ internal sealed class AppSettings
     public AppSettings Clone() => new()
     {
         StartWithWindows = StartWithWindows,
+        HideOnAutostart = HideOnAutostart,
         Metrics = Metrics.Clone(),
         Orientation = Orientation,
         PlacementMode = PlacementMode,

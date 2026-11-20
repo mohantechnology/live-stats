@@ -28,14 +28,9 @@ internal static class Program
         if (!created)
             return;
 
-        if (args.Any(a => string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase)))
-        {
-            Application.Run(new TrayAppContext(openSettingsOnStart: true));
-        }
-        else
-        {
-            Application.Run(new TrayAppContext());
-        }
+        bool openSettings = args.Any(a => string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase));
+        bool fromAutostart = args.Any(a => string.Equals(a, StartupHelper.AutostartArgument, StringComparison.OrdinalIgnoreCase));
+        Application.Run(new TrayAppContext(openSettingsOnStart: openSettings, startedFromAutostart: fromAutostart));
 
         _mutex.ReleaseMutex();
         _mutex.Dispose();

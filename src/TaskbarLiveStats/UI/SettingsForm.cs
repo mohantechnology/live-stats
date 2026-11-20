@@ -49,6 +49,9 @@ internal sealed class SettingsForm : AntdUI.Window
     private readonly Dictionary<MetricKind, ColorSwatch> _swatches = new();
 
     private AntdUI.Switch? _startWithWindows;
+    private AntdUI.Switch? _hideOnAutostart;
+    private Panel? _hideOnAutostartRow;
+    private Label? _hideOnAutostartHint;
     private AntdUI.Switch? _showOnFullscreen;
     private AntdUI.Switch? _hotkeyEnabled;
     private AntdUI.InputNumber? _intervalMs;
@@ -360,7 +363,30 @@ internal sealed class SettingsForm : AntdUI.Window
 
         var startup = NewCard();
         startup.Add(Heading("Startup"));
-        startup.Add(SwitchRow("Start with Windows", _draft.StartWithWindows, out _startWithWindows));
+        startup.Add(SwitchRow("Autostart when Windows boots", _draft.StartWithWindows, out _startWithWindows));
+        _hideOnAutostartRow = SwitchRow("Hide live stats on autostart", _draft.HideOnAutostart, out _hideOnAutostart);
+        _hideOnAutostartHint = Hint("When on, the bar stays hidden after Windows starts this app. Open it from the tray icon or the show/hide shortcut.", 48);
+        bool showHideOnAutostart = _draft.StartWithWindows;
+        _hideOnAutostartRow.Visible = showHideOnAutostart;
+        _hideOnAutostartHint.Visible = showHideOnAutostart;
+        startup.Add(_hideOnAutostartRow);
+        startup.Add(_hideOnAutostartHint);
+        if (_startWithWindows != null)
+        {
+            _startWithWindows.CheckedChanged += (_, _) =>
+            {
+                bool on = _startWithWindows.Checked;
+                bool changed = (_hideOnAutostartRow?.Visible ?? false) != on
+                    || (_hideOnAutostartHint?.Visible ?? false) != on;
+                if (_hideOnAutostartRow != null)
+                    _hideOnAutostartRow.Visible = on;
+                if (_hideOnAutostartHint != null)
+                    _hideOnAutostartHint.Visible = on;
+                if (changed && _chromeReady)
+                    LayoutActiveSection(preserveScroll: true, refreshRememberedScroll: false);
+            };
+        }
+
         page.Add(startup);
 
         var fullscreen = NewCard();
@@ -627,6 +653,8 @@ internal sealed class SettingsForm : AntdUI.Window
     {
         if (_startWithWindows != null)
             _draft.StartWithWindows = _startWithWindows.Checked;
+        if (_hideOnAutostart != null)
+            _draft.HideOnAutostart = _hideOnAutostart.Checked;
         if (_showOnFullscreen != null)
             _draft.ShowOnFullscreen = _showOnFullscreen.Checked;
         if (_hotkeyEnabled != null)

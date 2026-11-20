@@ -6,6 +6,7 @@ internal static class StartupHelper
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "TaskbarLiveStats";
+    public const string AutostartArgument = "--autostart";
 
     public static bool IsEnabled()
     {
@@ -21,7 +22,7 @@ internal static class StartupHelper
         if (enabled)
         {
             string path = Application.ExecutablePath;
-            key.SetValue(ValueName, $"\"{path}\"");
+            key.SetValue(ValueName, $"\"{path}\" {AutostartArgument}");
         }
         else
         {

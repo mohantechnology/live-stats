@@ -534,7 +534,7 @@ internal static class SettingsSelfTest
             else if (switches[0].Size != switches[1].Size)
                 failures.Add($"Hide and Show switches differ ({state}): {switches[0].Size} vs {switches[1].Size}.");
 
-            var startup = FindLabel(form, "Start with Windows");
+            var startup = FindLabel(form, "Autostart when Windows boots");
             AntdUI.Switch? shared = null;
             if (startup?.Parent != null)
             {
@@ -549,6 +549,9 @@ internal static class SettingsSelfTest
                 failures.Add($"Could not find the shared settings switch ({state}).");
             else if (switches.Count >= 2 && (switches[0].Size != shared.Size || switches[1].Size != shared.Size))
                 failures.Add($"Metric switches should match the other settings switches ({state}): {switches[0].Size} vs {shared.Size}.");
+
+            if (FindLabel(form, "Hide live stats on autostart") == null)
+                failures.Add($"Hide live stats on autostart should appear when autostart is on ({state}).");
         }
 
         AssertCaptionInside(FindLabel(form, "Total usage"), failures, state);

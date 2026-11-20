@@ -24,7 +24,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private bool _fullscreenActive;
     private readonly System.Windows.Forms.Timer _fullscreenTimer;
 
-    public TrayAppContext(bool openSettingsOnStart = false)
+    public TrayAppContext(bool openSettingsOnStart = false, bool startedFromAutostart = false)
     {
         _settings = _store.Load(out bool isFirstRun);
         if (isFirstRun)
@@ -48,7 +48,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _fullscreenTimer = new System.Windows.Forms.Timer { Interval = 400 };
         _fullscreenTimer.Tick += (_, _) => RefreshFullscreenState();
 
-        _startupItem = new ToolStripMenuItem("Start with Windows")
+        _startupItem = new ToolStripMenuItem("Autostart when Windows boots")
         {
             Checked = StartupHelper.IsEnabled(),
             CheckOnClick = true
@@ -157,6 +157,13 @@ internal sealed class TrayAppContext : ApplicationContext
         _watcher.Start();
         _fullscreenTimer.Start();
         RefreshFullscreenState(force: true);
+
+        // Autostart hide only applies to Windows Run launches, not manual or --settings starts.
+        if (startedFromAutostart && !openSettingsOnStart && _settings.HideOnAutostart)
+        {
+            _userHidden = true;
+            HideOverlay();
+        }
 
         if (openSettingsOnStart)
         {
